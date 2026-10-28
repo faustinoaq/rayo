@@ -452,6 +452,7 @@ module Rayo::JSON
       self
     end
 
+    @[AlwaysInline]
     private def before
       if @depth == 0
         raise Error.new("multiple roots") if @root
@@ -499,6 +500,7 @@ module Rayo::JSON
       raise Error.new("missing field value") if @pending
     end
 
+    @[AlwaysInline]
     private def quoted(v : String | Bytes)
       # Escape only: values come from the app or the database, which store UTF-8 already;
       # validating every string cost ~4% of a request. Reader.valid? checks client input.
@@ -508,24 +510,58 @@ module Rayo::JSON
       @buf << 34_u8
     end
 
+    @[AlwaysInline]
     def value(v : String | Bytes)
       before
       quoted(v)
     end
 
+    @[AlwaysInline]
     def value(v : Int32 | Int64)
       before
       @buf << v
     end
 
+    @[AlwaysInline]
     def value(v : Bool)
       before
       @buf << (v ? "true" : "false")
     end
 
+    @[AlwaysInline]
     def value(v : Nil)
       before
       @buf << "null"
+    end
+
+    # NamedTuple keys already establish a field. Scalars can finish it directly;
+    # containers and custom serializers still enter through the shared state machine.
+    @[AlwaysInline]
+    private def field_value(v : String | Bytes)
+      @pending = false
+      quoted(v)
+    end
+
+    @[AlwaysInline]
+    private def field_value(v : Int32 | Int64)
+      @pending = false
+      @buf << v
+    end
+
+    @[AlwaysInline]
+    private def field_value(v : Bool)
+      @pending = false
+      @buf << (v ? "true" : "false")
+    end
+
+    @[AlwaysInline]
+    private def field_value(v : Nil)
+      @pending = false
+      @buf << "null"
+    end
+
+    private def field_value(v)
+      value(v)
     end
 
     def value(v : Float64)
@@ -604,7 +640,7 @@ module Rayo::JSON
           @buf << {{(i == 0 ? "" : ",") + "\"" + escaped + "\":"}}
           @stack[@depth - 1] |= 1
           @pending = true
-          value(v[{{key.symbolize}}])
+          field_value(v[{{key.symbolize}}])
         {% end %}
       end
       {% elsif T.has_method?(:to_json) %}
