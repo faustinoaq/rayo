@@ -26,5 +26,9 @@ jobs:
       - uses: crystal-lang/install-crystal@v1
         with: { crystal: 1.22.1 }
       - run: crystal tool format --check src spec examples
-      - run: crystal spec
-      - run: crystal spec -Dgc_none
+      # Many specs start servers back to back and io_uring frees ring memory lazily, so the
+      # default 8 MB RLIMIT_MEMLOCK (counted on the runner's kernel) runs out mid-suite.
+      - run: |
+          sudo prlimit --pid $$ --memlock=unlimited:unlimited
+          crystal spec
+          crystal spec -Dgc_none

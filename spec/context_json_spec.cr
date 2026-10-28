@@ -79,7 +79,9 @@ describe "Context JSON" do
         ctx.json_array(items) { |i| {id: i} }
         ctx.json_body["id"].i64
       end
-      (GC.stats.total_bytes - before).should eq(0)
+      # total_bytes is process-wide: a runtime thread may allocate a few bytes meanwhile. One
+      # allocation per call would be at least 16 KB over these 1000 iterations.
+      (GC.stats.total_bytes - before).should be < 1024
     ensure
       LibC.free(ctx.output.ptr)
       LibC.free(ctx.headers.ptr)

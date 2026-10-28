@@ -48,4 +48,4 @@ jobs:
         run: |
           # inside the guest the runner (and its Postgres) is the user-mode network gateway
           vng --verbose --force-9p -r ${{ matrix.kernel }} --user root --cpus 2 --memory 2G --network user \
-            --exec "uname -r && env RAYO_PG_URL=postgres://postgres:postgres@10.0.2.2:5432/postgres ./bin/spec && env RAYO_PG_URL=postgres://postgres:postgres@10.0.2.2:5432/postgres ./bin/spec-nogc"
+            --exec "uname -r && export PATH=$PATH && env RAYO_PG_URL=postgres://postgres:postgres@10.0.2.2:5432/postgres ./bin/spec && env RAYO_PG_URL=postgres://postgres:postgres@10.0.2.2:5432/postgres ./bin/spec-nogc"
