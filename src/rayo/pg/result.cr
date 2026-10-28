@@ -125,6 +125,41 @@ module Rayo::PG
       Row.new(@data[4, n])
     end
 
+    def valid_partitions?(count : Int32) : Bool
+      last = 0
+      each do |row|
+        return false if row.size == 0 || row.null?(0)
+        ordinal = row.i32(0)
+        return false unless last <= ordinal <= count && ordinal > 0
+        last = ordinal
+      end
+      true
+    rescue Error | OverflowError
+      false
+    end
+
+    # Split sorted one-based request ordinals in one pass, including empty
+    # partitions. Error metadata is shared by every waiting request.
+    def each_partition(count : Int32, & : Result, Int32 ->) : Nil
+      p = @data.to_unsafe
+      remaining = @size
+      count.times do |i|
+        start = p
+        rows = 0
+        while remaining > 0
+          n = Wire.i32(p)
+          row = Row.new(Bytes.new(p + 4, n))
+          ordinal = row.i32(0)
+          raise Error.new("invalid batch ordinal/order") if ordinal < i + 1 || ordinal > count
+          break if ordinal != i + 1
+          p += 4 + n
+          remaining &-= 1
+          rows &+= 1
+        end
+        yield Result.new(Bytes.new(start, (p - start).to_i32), rows, @sqlstate, @message), i
+      end
+    end
+
     def each(& : Row ->) : Nil
       p = @data.to_unsafe
       @size.times do
