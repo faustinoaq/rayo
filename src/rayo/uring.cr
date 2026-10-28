@@ -1,5 +1,6 @@
 require "./sys"
 require "c/sys/mman"
+require "c/sys/eventfd"
 
 module Rayo
   lib LibUring
@@ -63,6 +64,19 @@ module Rayo
       cq_off : CqOff
     end
 
+    # io_uring_getevents_arg and __kernel_timespec have fixed-width fields.
+    struct GeteventsArg
+      sigmask : UInt64
+      sigmask_sz : UInt32
+      pad : UInt32
+      ts : UInt64
+    end
+
+    struct KernelTimespec
+      sec : Int64
+      nsec : Int64
+    end
+
     struct RsrcReg
       nr : UInt32
       flags : UInt32
@@ -94,6 +108,7 @@ module Rayo
     property accepting = 0 # multishot accepts armed here (one per listener)
     property used = 0      # slots taken: accepted and not yet closed by the kernel
 
+    @efd = -1
     @ring_mem : UInt8*
     @ring_size : UInt64
     @free_slots : Int32*
@@ -119,7 +134,7 @@ module Rayo
     def self.create(base : Int32, slots : Int32, sq : UInt32, cq : UInt32) : Ring?
       pa = LibUring::Params.new
       pa.cq_entries = cq
-      pa.flags = Uring::SETUP_CQSIZE | Uring::SETUP_SUBMIT_ALL | Uring::SETUP_SINGLE_ISSUER | Uring::SETUP_COOP_TASKRUN
+      pa.flags = Uring::SETUP_CQSIZE | Uring::SETUP_SUBMIT_ALL | Uring::SETUP_SINGLE_ISSUER | Uring::SETUP_DEFER_TASKRUN
       fd = LibC.syscall(Uring::SYS_SETUP, sq, pointerof(pa)).to_i32
       return nil if fd < 0
       r = new(fd, base, slots, pointerof(pa))
@@ -191,6 +206,7 @@ module Rayo
 
     def dispose : Nil
       LibC.close(@fd)
+      LibC.close(@efd) if @efd >= 0
       LibC.munmap(@ring_mem, @ring_size) unless @ring_mem.null?
       LibC.munmap(@sqes, @sq_entries.to_u64 * 64) unless @sqes.null?
       LibC.munmap(@bring, (Uring::NBUF * 16).to_u64) unless @bring.null?
@@ -240,13 +256,27 @@ module Rayo
       e
     end
 
-    def enter(min : UInt32, flags : UInt32) : Nil
+    def enter(min : UInt32, flags : UInt32, wait : Int32 = -1) : Nil
       publish_bufs # buffers returned so far must be visible to what gets submitted now
       store_rel(@sq_tail, @stail)
       n = @to_submit
-      submitted = LibC.syscall(Uring::SYS_ENTER, @fd, n, min, flags, Pointer(Void).null, 0)
-      raise "io_uring_enter failed" if submitted < 0 && Sys.errno != Sys::EINTR
-      @to_submit = submitted < 0 ? n : n - submitted.to_u32
+      ts = LibUring::KernelTimespec.new
+      arg = LibUring::GeteventsArg.new
+      if wait >= 0
+        ts.sec = wait.to_i64 // 1000
+        ts.nsec = (wait.to_i64 % 1000) * 1_000_000
+        arg.ts = pointerof(ts).address
+        # argsz is size_t: pass all 64 bits through the variadic syscall binding.
+        submitted = LibC.syscall(Uring::SYS_ENTER, @fd, n, min, flags | Uring::ENTER_EXT_ARG, pointerof(arg), sizeof(LibUring::GeteventsArg).to_u64)
+      else
+        submitted = LibC.syscall(Uring::SYS_ENTER, @fd, n, min, flags, Pointer(Void).null, 0)
+      end
+      # EINTR/ETIME may follow submission; the SQ head tells what is still queued.
+      @to_submit = @stail &- load_acq(@sq_head)
+      if submitted < 0
+        error = Sys.errno
+        raise "io_uring_enter failed (errno #{error})" unless error == Sys::EINTR || (wait >= 0 && error == Uring::ETIME)
+      end
     end
 
     @[AlwaysInline]
@@ -263,12 +293,13 @@ module Rayo
       @btail &+= 1
     end
 
-    # Poll the CQ itself. DEFER_TASKRUN needs enter(GETEVENTS) before a CQE exists;
-    # its eventfd wakeups can be lost on 6.12/6.18 (the deferred signal's pending
-    # bit stays set). COOP_TASKRUN batches work until syscall return, so ring-fd
-    # readiness wakes epoll without relying on those eventfd notifications.
+    # Register lazily: the common single-ring path waits in enter, without epoll.
     def watch(ep : Int32) : Nil
-      raise "epoll registration failed" if Sys.epoll(ep, Sys::EPOLL_CTL_ADD, @fd, Sys::EPOLLIN) < 0
+      return if @efd >= 0
+      @efd = LibC.eventfd(0, 0o4000 | 0o2000000) # EFD_NONBLOCK | EFD_CLOEXEC
+      raise "eventfd failed" if @efd < 0
+      raise "eventfd registration failed" if LibC.syscall(Uring::SYS_REGISTER, @fd, Uring::REGISTER_EVENTFD, pointerof(@efd), 1) < 0
+      raise "epoll registration failed" if Sys.epoll(ep, Sys::EPOLL_CTL_ADD, @efd, Sys::EPOLLIN | Sys::EPOLLET) < 0
     end
 
     def publish_bufs : Nil
@@ -328,9 +359,11 @@ module Rayo
     SETUP_CQSIZE        = 1_u32 << 3
     SETUP_SUBMIT_ALL    = 1_u32 << 7
     SETUP_SINGLE_ISSUER = 1_u32 << 12
-    SETUP_COOP_TASKRUN  = 1_u32 << 8
+    SETUP_DEFER_TASKRUN = 1_u32 << 13
     FEAT_SINGLE_MMAP    = 1_u32 << 0
-    ENTER_GETEVENTS     =          1_u32
+    ENTER_GETEVENTS     = 1_u32
+    ENTER_EXT_ARG       = 1_u32 << 3
+    REGISTER_EVENTFD    =              4
     REGISTER_FILES2     =             13
     REGISTER_PBUF_RING  =             22
     OFF_SQES            = 0x10000000_i64
@@ -346,6 +379,7 @@ module Rayo
     CQE_F_BUFFER        = 1_u32
     CQE_F_MORE          = 2_u32
     ENOBUFS             =   105
+    ETIME               =    62
 
     SQ_ENTRIES =  4096_u32 # largest ring; halved together while it doesn't fit the memlock budget
     CQ_ENTRIES = 32768_u32
@@ -614,19 +648,29 @@ module Rayo
 
     def self.run : NoReturn
       evs = LibC.malloc(MAX_RINGS * sizeof(Sys::EpollEvent)).as(Sys::EpollEvent*)
-      @@nrings.times { |i| @@rings[i].watch(@@ep) }
+      r0 = @@rings[0]
       loop do
         @@flushers.each &.flush
         wait = timers
-        ready = false
-        @@nrings.times do |i|
-          r = @@rings[i]
-          r.enter(0_u32, ENTER_GETEVENTS)
-          ready = true if r.ready?
-        end
-        unless ready
-          LibC.epoll_wait(@@ep, evs, MAX_RINGS, wait)
-          @@nrings.times { |i| @@rings[i].enter(0_u32, ENTER_GETEVENTS) }
+        if multi?
+          ready = false
+          @@nrings.times do |i|
+            r = @@rings[i]
+            r.watch(@@ep)
+            r.enter(0_u32, ENTER_GETEVENTS)
+            ready = true if r.ready?
+          end
+          unless ready
+            # On Linux 6.12/6.18 a DEFER_TASKRUN ring's eventfd can stop signalling
+            # (the deferred signal stays marked pending). Bound epoll to 1 ms so
+            # lost wakeups cannot strand work. The single-ring enter is unaffected.
+            LibC.epoll_wait(@@ep, evs, MAX_RINGS, wait == 0 ? 0 : 1)
+            @@nrings.times { |i| @@rings[i].enter(0_u32, ENTER_GETEVENTS) }
+          end
+        else
+          # Plain-fd watches and sends always use ring zero, as do accepts.
+          # EXT_ARG bounds the wait by the next timer without allocating an SQE.
+          r0.enter(1_u32, ENTER_GETEVENTS, wait)
         end
         @@nrings.times { |i| @@rings[i].drain }
         @@nrings.times { |i| @@rings[i].retry_recvs }
@@ -634,6 +678,15 @@ module Rayo
           plain_recv(i) if w.owner && !w.receiving && !w.closing
         end
       end
+    end
+
+    private def self.multi? : Bool
+      (1...@@nrings).each do |i|
+        r = @@rings[i]
+        # used includes closing slots until their close CQE has been drained.
+        return true if r.used > 0 || r.accepting > 0 || r.to_submit > 0 || r.ready?
+      end
+      false
     end
 
     def self.complete(r : Ring, cq : LibUring::Cqe) : Nil
