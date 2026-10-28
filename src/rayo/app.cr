@@ -11,6 +11,11 @@ module Rayo
     getter router = Router.new
     @before = [] of Router::Handler
     @after = [] of Router::Handler
+    @worker_start = [] of Proc(Int32, Nil)
+
+    def on_worker_start(&block : Int32 -> Nil) : Nil
+      @worker_start << block
+    end
 
     {% for method in %w(get post put patch delete options head) %}
       def {{method.id}}(path : String, &block : Context -> Nil) : Nil
@@ -46,15 +51,22 @@ module Rayo
       LibC.pthread_sigmask(1, pointerof(mask), Pointer(LibC::SigsetT).null)
     end
 
-    private def worker(host : String, port : Int32, workers : Int32, database : String?, pool : Int32) : NoReturn
+    private def worker(host : String, ports : Array(Int32), workers : Int32, database : String?, pool : Int32, index : Int32) : NoReturn
       reset_signals
-      fd = listen(host, port)
-      unless Uring.setup(pointerof(fd), 1, Sys.raise_nofile, workers)
-        LibC.close(fd)
+      fds = [] of Int32
+      begin
+        ports.each { |port| fds << listen(host, port) }
+      rescue ex
+        fds.each { |fd| LibC.close(fd) }
+        raise ex
+      end
+      unless Uring.setup(fds.to_unsafe, fds.size, Sys.raise_nofile, workers)
+        fds.each { |fd| LibC.close(fd) }
         raise "io_uring setup failed (Linux 6.1+ required)"
       end
       Server.init(self, Uring.capacity)
       Server.database = PG::WorkerPool.new(database, pool) if database
+      @worker_start.each &.call(index)
       Uring.run
     end
 
@@ -80,15 +92,21 @@ module Rayo
       fd
     end
 
-    def run(host = "0.0.0.0", port = 3000, workers = Sys.ncpu, database : String? = ENV["DATABASE_URL"]?, pool : Int32 = 4) : NoReturn
+    def run(host = "0.0.0.0", port = 3000, workers = Sys.ncpu, database : String? = ENV["DATABASE_URL"]?, pool : Int32 = 4, ports : Array(Int32)? = nil) : NoReturn
       raise ArgumentError.new("workers must be positive") if workers < 1
       raise ArgumentError.new("invalid port") unless 0 <= port <= 65535
       raise ArgumentError.new("pool size must be positive") if pool < 1
-      worker(host, port, 1, database, pool) if workers == 1
+      listeners = ports || [port]
+      raise ArgumentError.new("ports must not be empty") if listeners.empty?
+      listeners.each { |value| raise ArgumentError.new("invalid port") unless 0 <= value <= 65535 }
+      worker(host, listeners, 1, database, pool, 0) if workers == 1
+      {% unless flag?(:without_mt) %}
+        raise "multiple workers require -Dwithout_mt: Crystal runtime threads cannot survive fork; rebuild with --release -Dwithout_mt (optionally -Dgc_none)"
+      {% end %}
       reset_signals
       pids = [] of Int32
       begin
-        workers.times do
+        workers.times do |index|
           parent = LibC.getpid
           pid = LibC.fork
           raise "fork failed" if pid < 0
@@ -96,7 +114,7 @@ module Rayo
             LibSys.prctl(1, 15_u64)
             LibC._exit(1) if LibC.getppid != parent
             begin
-              worker(host, port, workers, database, pool)
+              worker(host, listeners, workers, database, pool, index)
             rescue ex
               STDERR.puts ex.message
               LibC._exit(1)

@@ -122,7 +122,7 @@ describe "Context database integration" do
     if pid == 0
       LibC.signal(15, LibC::SIG_DFL)
       begin
-        ContextDBFixture.app.run(host: "127.0.0.1", port: port, workers: 2, database: ContextDBFixture::DB_URL, pool: 2)
+        ContextDBFixture.app.run(host: "127.0.0.1", port: port, workers: {{ flag?(:without_mt) ? 2 : 1 }}, database: ContextDBFixture::DB_URL, pool: 2)
       rescue ex
         STDERR.puts ex.inspect_with_backtrace
         LibC._exit(1)
