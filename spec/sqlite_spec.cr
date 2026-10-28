@@ -2,6 +2,25 @@ require "./spec_helper"
 require "../src/rayo/sqlite"
 
 describe Rayo::SQLite do
+  it "refreshes column bounds after SQLite automatically reprepares a statement" do
+    db = Rayo::SQLite::Database.new(":memory:")
+    db.exec("CREATE TABLE shape(a INTEGER); INSERT INTO shape VALUES (1)")
+    stmt = db.prepare("SELECT * FROM shape")
+    begin
+      stmt.step.should be_true
+      stmt.i64(0).should eq(1)
+      expect_raises(IndexError) { stmt.i64(1) }
+      stmt.reset
+      db.exec("ALTER TABLE shape ADD COLUMN b TEXT DEFAULT 'new'")
+      stmt.step.should be_true
+      stmt.str(1).should eq("new".to_slice)
+      expect_raises(IndexError) { stmt.i64(2) }
+    ensure
+      stmt.close
+      db.close
+    end
+  end
+
   it "clears omitted bindings across resets and changes binding types" do
     db = Rayo::SQLite::Database.new(":memory:")
     stmt = db.prepare("SELECT ?1, ?2, ?3, ?64")

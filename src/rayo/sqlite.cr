@@ -78,6 +78,7 @@ module Rayo::SQLite
     @ptr = Pointer(Void).null
     @row = false
     @done = false
+    @columns = 0
     @small_bindings : Bool
     @integers = 0_u64
     @borrowed = 0_u64
@@ -143,15 +144,20 @@ module Rayo::SQLite
     def step : Bool
       check_open
       return false if @done
+      first = !@row
       # Keep integer bindings until rebind: clear_bindings expires SQLite's plan,
       # even when the next execution supplies exactly the same values.
-      if !@row && @small_bindings
+      if first && @small_bindings
         clear_bindings(@integers & ~@bound)
         @integers &= @bound
       end
       @row = false
       rc = LibSQLite.step(@ptr)
-      return @row = true if rc == 100
+      if rc == 100
+        # Refresh after step: SQLite may reprepare SELECT * after a schema change.
+        @columns = LibSQLite.column_count(@ptr) if first
+        return @row = true
+      end
       @done = true
       raise Error.new(rc) unless rc == 101
       false
@@ -159,7 +165,7 @@ module Rayo::SQLite
 
     private def column(index : Int32) : Nil
       check_open
-      raise IndexError.new unless @row && 0 <= index < LibSQLite.column_count(@ptr)
+      raise IndexError.new unless @row && 0 <= index < @columns
     end
 
     def null?(index : Int32) : Bool
