@@ -6,7 +6,8 @@ its parts. Everything lives under `module Rayo`; each part can be required on it
 
 ## Principles
 
-1. **Linux only, io_uring first.** Linux 6.1+. One io_uring per worker process (several when
+1. **Linux only, io_uring only.** Linux 6.1+. There is no epoll fallback, by design: newer
+   kernel features are probed at start-up and used when present, never traded for portability. One io_uring per worker process (several when
    the fixed-file table needs more room). Multishot accept and recv, provided buffers,
    direct (fixed) descriptors. The stdlib event loop, `IO` and `Socket` are not used on the
    request path.
@@ -30,7 +31,7 @@ its parts. Everything lives under `module Rayo`; each part can be required on it
 | `src/rayo/sys.cr` | `Rayo::Sys`, `Rayo::LibSys` | syscalls, sockets, rlimits, clocks |
 | `src/rayo/buf.cr` | `Rayo::Buf` | growable malloc buffer, integer and JSON-string writers |
 | `src/rayo/uring.cr` | `Rayo::Uring` | rings, SQE/CQE plumbing, buffer rings, fixed files, memlock sizing |
-| `src/rayo/http.cr` | `Rayo::HTTP` | zero-copy HTTP/1.1 request parser, response writer, gzip (libdeflate) |
+| `src/rayo/http.cr` | `Rayo::HTTP` | zero-copy HTTP/1.1 request parser, response writer (gzip with libdeflate on the roadmap) |
 | `src/rayo/server.cr` | `Rayo::Server` | connection table, generations, ordered pipelined responses, send queue |
 | `src/rayo/router.cr` | `Rayo::Router` | compile-time-registered routes, path params as slices |
 | `src/rayo/context.cr` | `Rayo::Context` | per-request view: method, path, params, headers, body, output |

@@ -44,11 +44,63 @@ Each part can be required on its own:
 | `rayo/jwt` | HS256 tokens without allocation |
 | `rayo/buf` | growable byte buffer with fast integer and JSON-string writers |
 
+## Why Rayo is different
+
+Rayo does not try to run everywhere. It picks the fastest way Linux offers today and builds
+only on that:
+
+- **io_uring only. There is no epoll or kqueue fallback**, and no macOS or Windows support.
+  A fallback would mean a second, slower code path to keep and a design limited to what
+  both paths can do.
+- **No garbage collector needed.** The request path does not allocate, so apps can be built
+  with `-Dgc_none`: no pauses, flat memory under load.
+- **No stdlib event loop, fibers or `IO` on the request path.** One loop per worker, written
+  for io_uring.
+- **Postgres in the loop.** The database client is part of the framework and shares the
+  ring with the HTTP sockets, so requests that arrive together share a round trip.
+- **Newer kernels make it faster.** Rayo probes the kernel at start-up and turns on newer
+  io_uring features when they are there (see the roadmap). It never switches to a
+  slower design to support an older system.
+
+If you need portability, a stdlib-based framework is the better choice. Rayo is for Linux
+servers where every core and every millisecond counts.
+
 ## Requirements
 
-- Linux 6.1 or newer (io_uring features), x86-64 or arm64
+- Linux 6.1 or newer (the minimum for `IORING_SETUP_DEFER_TASKRUN`, which the loop uses).
+  Newer kernels unlock the features marked in the roadmap.
+- x86-64 or arm64
 - Crystal 1.22+
 - libcrypto (OpenSSL 3) and libdeflate
+- io_uring allowed: some container runtimes block it by default (Docker's default seccomp
+  profile, gVisor, some managed Kubernetes). Run with a seccomp profile that allows the
+  `io_uring_*` syscalls; Rayo exits with a clear message when io_uring is not available.
+
+## Roadmap
+
+These come from the benchmark servers Rayo grew out of, or from recent kernels. Each one
+goes in only after it shows a measured gain.
+
+**From the benchmark servers**
+
+| Feature | What it gives |
+|---|---|
+| gzip with libdeflate, cached per response | less bandwidth and send time on large JSON |
+| Cross-request query batching (`Rayo::PG::Batch`) | requests in the same loop turn share one query, not just one round trip |
+| Group commit for writes (opt-in) | fewer commits under write-heavy load; trades latency for CPU |
+| Chunked request bodies | streaming uploads |
+| Multi-lane bcrypt | password hashing several at a time with SIMD |
+
+**From newer kernels** (used when present, detected at start-up)
+
+| Feature | Kernel | What it gives |
+|---|---|---|
+| Zero-copy send (`SEND_ZC`) | 6.0 | no copy of large responses into the kernel |
+| NAPI busy polling | 6.9 | lower latency when the NIC supports it |
+| Receive bundles | 6.10 | several buffers in one completion: fewer completions under load |
+| Incremental buffer consumption | 6.12 | small reads stop wasting whole buffers: less memory per connection |
+| Registered wait regions, ring resizing | 6.13 | cheaper waits; rings that grow with the load |
+| Zero-copy receive (`zcrx`) | 6.15 | data goes from the NIC to user memory with no copy (needs NIC support) |
 
 ## Development
 
