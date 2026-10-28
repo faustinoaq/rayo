@@ -1,0 +1,37 @@
+require "./spec_helper"
+require "../src/rayo/sqlite"
+
+describe Rayo::SQLite do
+  it "reuses prepared bindings and returns borrowed columns, NULL and affected rows" do
+    db = Rayo::SQLite::Database.new(":memory:")
+    db.exec("CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT, value INTEGER)")
+    insert = db.prepare("INSERT INTO items VALUES (?, ?, ?)")
+    query = db.prepare("SELECT id, name, value FROM items ORDER BY id")
+    begin
+      insert.bind(1, 1).bind(2, "Ana").bind(3, nil)
+      insert.step.should be_false
+      db.rows_affected.should eq(1)
+      insert.reset
+      insert.bind(1, 2).bind(2, "雪".to_slice).bind(3, 42)
+      insert.step.should be_false
+      insert.reset
+      query.step.should be_true
+      query.i64(0).should eq(1)
+      query.str(1).should eq("Ana".to_slice)
+      query.null?(2).should be_true
+      query.step.should be_true
+      query.str(1).should eq("雪".to_slice)
+      query.i64(2).should eq(42)
+      expect_raises(IndexError) { query.str(3) }
+      query.step.should be_false
+      query.reset
+      insert.bind(1, 2)
+      expect_raises(Rayo::SQLite::Error) { insert.step }
+      insert.reset
+    ensure
+      insert.close
+      query.close
+      db.close
+    end
+  end
+end
