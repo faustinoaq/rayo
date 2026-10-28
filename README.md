@@ -106,7 +106,8 @@ The timestamp helper rejects infinity and years outside 0001–9999. Text input
 must carry a timezone (`Z`, `+HH`, `+HH:MM`, or `+HH:MM:SS`); the PG client configures
 ISO dates. Standalone users can require `rayo/json/timestamp`.
 
-Runnable examples: [JSON](examples/json.cr) and [Postgres](examples/pg.cr).
+Runnable examples: [JSON](examples/json.cr), [Postgres](examples/pg.cr), and
+[coalesced reads](examples/pg_coalescer.cr).
 The Postgres example creates its users table and seed row during startup.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how the parts fit together.
@@ -119,6 +120,7 @@ Each part can be required on its own:
 |---|---|
 | `rayo` | HTTP framework, Postgres, JSON/timestamps, JWT and gzip |
 | `rayo/pg` | Postgres v3 client with pipelining (works with or without the Rayo loop) |
+| `rayo/pg/coalescer` | bounded adaptive cross-request read scheduling and array query fan-out |
 | `rayo/json` | streaming JSON writer and zero-copy reader |
 | `rayo/bcrypt` | bounded asynchronous password jobs with interleaved cost-10 lanes and libcrypt fallback |
 | `rayo/sqlite` | optional synchronous SQLite C adapter and borrowed columns |
@@ -126,6 +128,41 @@ Each part can be required on its own:
 | `rayo/json/timestamp` | PostgreSQL timestamptz to RFC 3339 JSON values |
 | `rayo/jwt` | HS256 tokens without allocation |
 | `rayo/buf` | growable byte buffer with fast integer and JSON-string writers |
+
+## Coalesced Postgres reads
+
+`PG::Coalescer(T)` collects requests in the same loop turn into bounded, reusable
+array parameters. While reads are in flight it collects for a short window that
+grows with depth, up to a configured cap. Idle reads dispatch immediately.
+Create one coordinator per worker and call `attach` in the worker startup hook.
+The [complete example](examples/pg_coalescer.cr) owns a PG ring transport and uses:
+
+```crystal
+# At startup, with a non-capturing dispatcher:
+reads = Rayo::PG::Coalescer(Rayo::PG::ReadRequest).new do |group|
+  group.query(Reads.driver.not_nil!.transport.conn, Reads::FIND, group.param(0))
+end
+reads.attach
+
+# In a handler, using the retained worker coordinator:
+Reads.driver.not_nil!.coordinator.enqueue(ctx, ctx.param_i64("id")) do |res, ctx|
+  ctx.json(value: res.first?.not_nil!.i64(2)) unless res.error?
+end
+```
+
+The SQL uses `unnest($1::int8[]) WITH ORDINALITY`, returns the one-based request
+ordinal in column zero, and orders by it. Every waiting request receives its
+own borrowed result, including an empty result for missing rows. Callbacks must
+not capture. HTTP handles preserve response order, ignore disconnected requests,
+and compose with ordinary database and password jobs. SQL errors reach every
+callback; unhandled errors and callback exceptions return 500.
+
+Defaults are 128 requests per group, 32 preallocated groups, depth 2, a 1 ms
+window per in-flight group and a 5 ms maximum. Full queues raise `PG::DepthError`
+before deferring an HTTP request. These limits are worker-local. The coordinator
+owns scheduling and arrays; the caller owns its connections and transport flush.
+See [PG documentation](src/rayo/pg/README.md) for multiple parameters, custom
+multi-stage enrichment, standalone drivers and lifetimes.
 
 ## Optional password hashing and SQLite
 
@@ -226,7 +263,7 @@ goes in only after it shows a measured gain.
 
 | Feature | What it gives |
 |---|---|
-| Cross-request query batching (`Rayo::PG::Batch`) | requests in the same loop turn share one query, not just one round trip |
+| Cross-request write group commit | opt-in shared transactions across requests |
 | Chunked request bodies | streaming uploads |
 
 **From newer kernels** (used when present, detected at start-up)

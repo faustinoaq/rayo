@@ -117,8 +117,76 @@ batch.clear
 
 Use SQL such as `SELECT id FROM users WHERE id = ANY($1::int8[])`. `param` is
 copied into the queued Bind message, so `clear` is safe immediately after
-`query`. A batch supplies aggregation hooks; request routing and transaction or
-group-commit policy belong to the caller.
+`query`. A batch supplies array encoding; `Coalescer(T)` adds scheduling and fan-out.
+Transaction and group-commit policy belong to the caller.
+
+## Adaptive read coordinator
+
+Require `rayo/pg/coalescer` for standalone use; `rayo` also loads its loop/HTTP
+integration. Create `Coalescer(T).new(batch_size: 128, groups: 32, depth: 2,
+parameters: 1, window_us: 1000, max_window_us: 5000) { |group| ... }` once per
+worker. The dispatcher must not capture. It may use worker-owned module state or
+state retained in `group[0]`. At least one group must remain outside pipeline depth.
+
+```crystal
+# Use a retained connection in Store.conn; create at worker startup.
+reads = Rayo::PG::Coalescer(Int64).new do |group|
+  group.query(Store.conn, LOOKUPS, group.param(0))
+end
+reads.enqueue(123_i64, 42_i64) do |result, request_id|
+  # Column zero is the request ordinal; application columns start at one.
+end
+reads.flush
+# Drive Store.conn's transport, then close reads after all callbacks finish.
+```
+
+`enqueue(state, *values, key: 0) { |result, state| ... }` appends one value per
+configured array column. Values accept the same types as Batch; bytes are copied
+on enqueue, so callers may immediately reuse their input. The number of values
+must equal `parameters`. States/callbacks live in GC-scanned preallocated tables.
+Keys partition independent query shapes. Capacity is bounded by `groups *
+batch_size`, including in-flight groups; queue exhaustion raises DepthError.
+`available?(key)` reports whether another request fits. Capturing callbacks raise
+before queuing. `queued`, `in_flight` and `batch_size` expose scheduling state.
+
+The dispatcher accesses `group.size`, `key`, `[](i)`, `each`, and `param(i)`.
+Call `group.query(conn, statement, *array_params)` for automatic fan-out. SQL must
+return the one-based request ordinal in column zero, sorted ascending. Use
+`unnest(... WITH ORDINALITY)` plus a join (which may return no rows for a key), or
+an ordinal mapping around `= ANY($1)`. Duplicate input keys remain distinct
+requests. Each callback receives its Result partition, including empty partitions,
+and SQL/transport errors are broadcast. Callback exceptions do not strand later
+requests: after completing fan-out the first exception is re-raised. Result/Row
+views expire when the callback returns. The ordinal column remains in each Row.
+
+A custom dispatcher may instead `enqueue(state, key: ...)` without a callback
+and with `parameters: 0`. It consumes `group.each`, builds application arrays,
+and retains the group through multiple queries (page selection, shared enrichment,
+viewer flags). It must call `group.done` exactly once after its final borrowed
+rows are consumed, including on failure. This is how applications share distinct
+article data without serializing it once per overlapping page in Postgres.
+The coordinator does not implement caching, transactions or automatic retry.
+
+`flush(now = monotonic_ns) : Int64?` dispatches eligible groups and returns the
+next collection deadline when a timer is needed. Standalone drivers must wake at
+that deadline or on completion and flush again. With a full pipeline, completion
+is the wakeup. Idle traffic adds no collection delay. Busy traffic waits until
+`last_dispatch + min(window_us * observed_depth, max_window_us)`, retaining the
+highest in-flight depth seen while queuing even after fast completions; full same-turn groups
+can dispatch together up to depth. Custom dispatchers must queue asynchronous work
+and return; do not recursively drive database receives.
+
+Require `rayo/pg/coalescer/loop` and call `attach` once to use the Rayo loop. It
+registers a flusher and a single reusable timeout, rounded up to milliseconds.
+Connections remain caller-owned: register their transport flusher after attaching
+the coordinator so queued queries can send in the same turn. Attached drivers
+live until worker exit; no detach is provided.
+
+`Coalescer(ReadRequest)` adds `enqueue(ctx, *values) { |result, ctx| ... }` when
+requiring `rayo` or `rayo/pg/coalescer/http`. Capacity and NUL checks happen before
+deferral. Pending counters compose with database/password callbacks, errors use
+the normal HTTP database-error response, and stale handles skip user callbacks.
+See [the runnable example](../../../examples/pg_coalescer.cr).
 
 ## Lifetime and limits
 

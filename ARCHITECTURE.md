@@ -22,7 +22,7 @@ its parts. Everything lives under `module Rayo`; each part can be required on it
    callback finishes the response. Callbacks are non-capturing procs (no closure
    allocation); per-request state goes in the context.
 5. **Batching is a feature.** Requests that arrive together can share one round trip to
-   Postgres (pipelining) and, opt-in, one query (`Rayo::PG::Batch`).
+   Postgres (pipelining) and, opt-in, one query (`Rayo::PG::Batch` and `Rayo::PG::Coalescer(T)`).
 
 ## Layout
 
@@ -160,6 +160,36 @@ shares a transaction across the loop turn. It commits before finishing handles,
 rolls back the whole batch on error, and uses separate pending/finishing queues so
 completion can safely dispatch the next pipelined request. Its block must finish
 synchronous SQLite work before returning; it is not an asynchronous transaction.
+
+### Cross-request reads
+
+`pg/coalescer.cr` is independently usable with `rayo/pg`. Each worker preallocates
+bounded groups, GC-scanned request/callback tables and reusable array builders.
+Enqueue copies parameter bytes immediately; state stays retained until completion.
+Different integer keys collect separately and queued groups dispatch oldest first.
+Same-turn requests share a group. With no reads in flight, flush dispatches without
+waiting. Otherwise the deadline is last dispatch plus `min(window_us * in_flight,
+max_window_us)`, measured on CLOCK_MONOTONIC. The collector retains the highest
+depth observed while queuing, so a fast completion does not collapse its window. A full pipeline waits for completion;
+there is no polling loop. `coalescer/loop.cr` attaches a flusher and at most one
+one-shot timer, rounded up to the loop's millisecond resolution.
+
+`Group#query` sends caller-supplied array parameters, splits sorted one-based
+ordinals in column zero into borrowed Result views in a single pass, and fans
+out callbacks even if an earlier callback raises. Missing ordinals yield empty
+results; SQL/transport errors reach every callback. Group storage is released
+only after fan-out, so callbacks can enqueue another batch safely. Custom
+dispatchers can retain a Group through dependent queries and call `done` after
+the final callback; application SQL, deduplication and enrichment stay outside
+the coordinator. They own error handling and must complete every retained handle.
+
+`coalescer/http.cr` provides `Coalescer(ReadRequest)#enqueue(ctx, *params)` with
+non-capturing `|result, ctx|` callbacks. It checks capacity and parameters before
+deferring, retains Deferred generations/serials, and uses `work_pending` alongside
+`db_pending` so chained PG/bcrypt jobs complete once. Stale handles skip callbacks.
+The driver and its connection live until worker exit when attached. Standalone
+users drain groups before explicit `close`; close rejects queued/in-flight work.
+Neither the core nor HTTP integration allocates managed objects on warmed paths.
 
 ### Response ordering
 
