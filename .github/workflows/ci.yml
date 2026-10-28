@@ -24,6 +24,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: crystal-lang/install-crystal@v1
         with: { crystal: 1.22.1 }
+      - run: sudo apt-get update -q && sudo apt-get install -yq libdeflate-dev libsqlite3-dev libcrypt-dev
       - run: crystal tool format --check src spec examples
       # Many specs start servers back to back and io_uring frees ring memory lazily, so the
       # default 8 MB RLIMIT_MEMLOCK (counted on the runner's kernel) runs out mid-suite.
@@ -31,3 +32,5 @@ jobs:
           sudo prlimit --pid $$ --memlock=unlimited:unlimited
           crystal spec
           crystal spec -Dgc_none
+          crystal spec -Dwithout_mt
+          crystal spec -Dwithout_mt -Dgc_none

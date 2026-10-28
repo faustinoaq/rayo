@@ -12,8 +12,8 @@ its parts. Everything lives under `module Rayo`; each part can be required on it
    direct (fixed) descriptors. The stdlib event loop, `IO` and `Socket` are not used on the
    request path.
 2. **Share nothing.** `App#run` forks one worker per CPU. Each worker has its own listeners
-   (`SO_REUSEPORT`), ring, connection table and Postgres connections. No locks, no threads
-   on the request path.
+   (`SO_REUSEPORT`), ring, connection table and Postgres connections. No locks on the loop request path. Optional bcrypt helpers start after fork
+   and exchange bounded jobs with the loop over a completion socket.
 3. **No allocation per request.** Buffers are allocated at start-up and reused or grown with
    `realloc`. Handlers write straight into the connection's output buffer. A program that
    follows the rules can be built with `-Dgc_none`; a program that doesn't still works with
@@ -31,13 +31,17 @@ its parts. Everything lives under `module Rayo`; each part can be required on it
 | `src/rayo/sys.cr` | `Rayo::Sys`, `Rayo::LibSys` | syscalls, sockets, rlimits, clocks |
 | `src/rayo/buf.cr` | `Rayo::Buf` | growable malloc buffer, integer and JSON-string writers |
 | `src/rayo/uring.cr` | `Rayo::Uring` | rings, SQE/CQE plumbing, buffer rings, fixed files, memlock sizing |
-| `src/rayo/http.cr` | `Rayo::HTTP` | zero-copy HTTP/1.1 request parser, response writer (gzip with libdeflate on the roadmap) |
+| `src/rayo/http.cr` | `Rayo::HTTP` | zero-copy HTTP/1.1 request parser, response framing; gzip uses a reusable worker compressor |
 | `src/rayo/server.cr` | `Rayo::Server` | connection table, generations, ordered pipelined responses, send queue |
 | `src/rayo/router.cr` | `Rayo::Router` | compile-time-registered routes, path params as slices |
 | `src/rayo/context.cr` | `Rayo::Context` | per-request view: method, path, params, headers, body, output |
-| `src/rayo/app.cr` | `Rayo::App` | user API: routes, middleware hooks, `run(port, workers)` |
+| `src/rayo/app.cr` | `Rayo::App` | user API: routes, middleware hooks, `run(port/ports, workers)`, worker startup hooks |
 | `src/rayo/pg.cr` + `src/rayo/pg/*` | `Rayo::PG` | Postgres v3 wire protocol, pipelining, prepared statements |
 | `src/rayo/json.cr` | `Rayo::JSON` | streaming writer into a `Buf`; zero-copy reader for request bodies |
+| `src/rayo/gzip.cr` | `Rayo::Gzip` | Accept-Encoding negotiation and libdeflate response compression |
+| `src/rayo/bcrypt.cr` + `bcrypt/lanes.cr` | `Rayo::Bcrypt` | preallocated jobs, raw helper threads, interleaved hashing, ring completion |
+| `src/rayo/json/timestamp.cr` | `Rayo::JSON::Timestamp` | ISO timestamptz text/binary to UTC RFC 3339 |
+| `src/rayo/sqlite.cr` + `sqlite/group_commit.cr` | `Rayo::SQLite` | optional synchronous C adapter and opt-in group commit |
 | `src/rayo/jwt.cr` | `Rayo::JWT` | HS256 sign/verify without allocation (libcrypto) |
 
 ## User API
@@ -83,6 +87,9 @@ app.run port: 3000, database: ENV["DATABASE_URL"]?, pool: 4
   field. Values dispatch through writer overloads: all integer widths, floats, booleans,
   nil, strings/bytes, NamedTuples, tuples, numeric static arrays/slices, and custom
   `to_json(Rayo::JSON::Writer)`. Unsupported values fail compilation.
+- Writers are reference objects owned and reused by each Context; standalone users
+  create once and call `reset` between documents. Custom serializers and nested blocks
+  share depth, separator and pending-field state. `reset` does not clear the output Buf.
 - `j.array(enumerable) { |item| named_tuple }` also works in streaming writer blocks.
 - Strings returned by `row.str` are slices (`Bytes`) unless the user calls `String.new`.
 - `ctx.db` is the worker's Postgres pool; queries started by requests handled in the same
@@ -109,12 +116,50 @@ slot. Multiple queries can share a request; the last callback completes its resp
 Capturing callbacks are rejected before queuing at runtime, matching the standalone
 PG client. Crystal's ordinary block-taking methods do not expose caller ASTs for
 compile-time capture checks. Store per-request state in Context and use the callback's
-`ctx` argument. Result/row views expire as the callback returns.
+`ctx` argument. Result/row views expire as the callback returns. `Result#rows_affected` retains the
+CommandComplete count until that callback and resets between pipelined commands.
 
 An error result still reaches the callback. If it leaves the default status and an
 empty body, the response becomes `500 {"error":"database error"}`. Callback exceptions
 also become 500 JSON. No database configuration causes `ctx.db` to raise clearly.
 Automatic reconnect and query cancellation are not implemented.
+
+### Worker startup and optional drivers
+
+Multiple workers require `-Dwithout_mt` in both GC modes. The guard executes before
+any worker fork. Crystal's monitor starts before user code; raw fork cannot reset
+its thread registry or collector stack handles. Rayo does not patch runtime state.
+One worker may use the default runtime. Do not create helper threads before `run`.
+
+`run(ports: [3000, 3001])` opens every listener in every worker with SO_REUSEPORT.
+`on_worker_start { |index| ... }` runs once per worker (zero-based) after ring and
+PG setup, before serving; one worker uses index zero. Startup hooks can allocate,
+open SQLite handles, attach bcrypt pools and register flushers. Hook failure exits
+the worker and invokes the existing supervisor policy.
+
+Gzip is opt-in (`app.gzip = true`, `gzip_min_size = 1024`), runs after response
+hooks and before framing, and copies its compressed scratch into context output.
+`ctx.compress = false` opts out for that request. Neither buffers nor the compressor
+are shared across workers. Negotiation handles q=0 and wildcard precedence; existing
+encodings, partial responses and bodyless statuses bypass compression.
+
+Bcrypt jobs and password/hash storage are allocated in `Bcrypt::Pool.new` after fork.
+The loop owns the free list, callbacks and deferred HTTP handles; raw helpers only
+hash and send record pointers back. Completion is watched by the ring. Capturing
+callbacks are rejected before queuing. Context `work_pending` and `db_pending`
+keep responses alive across database/password chains; both must reach zero before
+completion. Borrowed hash bytes expire at callback return. Low-level callbacks
+receive a UInt64 state token. Costs other than 10, `$2y$`, and historical `$2a$`
+high-bit cases use libcrypt. Queue capacity is bounded; helpers never allocate
+managed objects or call application callbacks.
+
+The optional SQLite adapter borrows text bindings until reset/rebind and column
+slices until step/reset/close. Statements are prepared once in the worker hook;
+SQLite itself is synchronous and may allocate internally. GroupCommit explicitly
+shares a transaction across the loop turn. It commits before finishing handles,
+rolls back the whole batch on error, and uses separate pending/finishing queues so
+completion can safely dispatch the next pipelined request. Its block must finish
+synchronous SQLite work before returning; it is not an asynchronous transaction.
 
 ### Response ordering
 

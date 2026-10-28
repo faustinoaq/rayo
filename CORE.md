@@ -91,7 +91,7 @@ before the fixed slot closes, and send memory survives until its completion.
 Request headers are limited to 16 KiB and bodies to 1 MiB. Malformed or chunked request
 framing gets 400 and a close. Deferred input is bounded to the same size; a response
 queue over 4 MiB closes a slow connection. Total fixed-slot exhaustion refuses new
-peers. There is no gzip, chunked response streaming, TLS, automatic HEAD-to-GET
+peers. There is no chunked response streaming, TLS, automatic HEAD-to-GET
 fallback, HTTP upgrade, 100-continue handshake, or idle-client timeout in this core.
 `sys.cr` and `buf.cr` are unchanged.
 
@@ -174,3 +174,44 @@ so the route must return a stable status, header length and body length.
 Known integration gap: database callback captures are rejected before queuing
 at runtime, rather than at compile time. The ordinary block-taking API cannot
 perform the direct C-callback check; no capturing callback enters the PG queue.
+
+
+## App-driven additions
+
+The worker API now accepts `ports: Array(Int32)` and
+`on_worker_start { |worker_index| ... }`. The hook runs after ring and PG setup and
+before serving, in each child (index zero when running one worker). Multiple workers
+fail before fork unless built with `-Dwithout_mt`, with or without the GC.
+
+Crystal 1.22.1 starts `Fiber::ExecutionContext::Monitor`'s SYSMON pthread during
+runtime startup. Native fork retains only the caller, while Crystal's Thread/Fiber
+registries and locks remain copied. In the default GC, `gc/boehm.cr`'s collection
+hook walks `Thread.unsafe_each` and uses each `gc_thread_handler` to update native
+stack bottoms; Boehm's native fork handling cannot rebuild Crystal's registry.
+A local probe confirmed both DEFAULT-0 and SYSMON records remain visible around
+raw fork. A single explicit collection in that probe happened to succeed; it does
+not make continuing with stale runtime records supported. This explains why the
+library must reject that configuration instead of relying on a crash reproducer.
+Use `--release -Dwithout_mt`, optionally adding `-Dgc_none`. Start application
+threads only from the worker hook.
+
+JSON writers are reusable reference objects. Context creates one with its output
+buffer; custom `to_json` methods and nested blocks share its state. Standalone
+callers create one writer, clear the buffer and call `reset` for each document.
+Postgres results retain CommandComplete counts in `rows_affected` without changing
+returned-row `size`.
+
+Opt-in gzip (`app.gzip`, `app.gzip_min_size`, `ctx.compress = false`) uses one
+compressor per worker. Optional `rayo/bcrypt` provides bounded asynchronous helper
+jobs and composes with deferred database callbacks. Optional `rayo/sqlite` exposes
+prepared statements and borrowed columns; `rayo/sqlite/group_commit` delays
+responses until commit and rolls back failed batches. `JSON::Timestamp` supports
+Postgres ISO timestamptz text and binary microseconds. See README for signatures,
+view lifetimes and limits. `sys.cr` and `buf.cr` remain unchanged.
+
+The expanded suite covers custom JSON separators/fields, fragmented affected-row
+counts and real Postgres writes, multiworker hook indices, multiple listening ports,
+gzip decompression/negotiation/opt-out and warmed allocations, bcrypt vectors and
+helper completion, chained database/password callbacks, timestamp offsets/epochs,
+SQLite bindings and commit/rollback during pipelined requests. CI runs both GC
+modes with the default runtime and `-Dwithout_mt` on every kernel in the matrix.

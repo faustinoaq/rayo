@@ -37,15 +37,17 @@ jobs:
       - name: Install virtme-ng
         run: |
           sudo apt-get update -q
-          sudo apt-get install -yq qemu-system-x86 busybox-static
+          sudo apt-get install -yq qemu-system-x86 busybox-static libdeflate-dev libsqlite3-dev libcrypt-dev
           pipx install virtme-ng==1.42
       - name: Build specs
         run: |
           mkdir -p bin
           crystal build spec/*_spec.cr -o bin/spec
           crystal build spec/*_spec.cr -Dgc_none -o bin/spec-nogc
+          crystal build spec/*_spec.cr -Dwithout_mt -o bin/spec-st
+          crystal build spec/*_spec.cr -Dwithout_mt -Dgc_none -o bin/spec-st-nogc
       - name: Specs on ${{ matrix.kernel }}
         run: |
           # inside the guest the runner (and its Postgres) is the user-mode network gateway
           vng --verbose --force-9p -r ${{ matrix.kernel }} --user root --cpus 2 --memory 2G --network user \
-            --exec "uname -r && export PATH=$PATH && env RAYO_PG_URL=postgres://postgres:postgres@10.0.2.2:5432/postgres ./bin/spec && env RAYO_PG_URL=postgres://postgres:postgres@10.0.2.2:5432/postgres ./bin/spec-nogc"
+            --exec "uname -r && export PATH=$PATH && env RAYO_PG_URL=postgres://postgres:postgres@10.0.2.2:5432/postgres ./bin/spec && env RAYO_PG_URL=postgres://postgres:postgres@10.0.2.2:5432/postgres ./bin/spec-nogc && env RAYO_PG_URL=postgres://postgres:postgres@10.0.2.2:5432/postgres ./bin/spec-st && env RAYO_PG_URL=postgres://postgres:postgres@10.0.2.2:5432/postgres ./bin/spec-st-nogc"
