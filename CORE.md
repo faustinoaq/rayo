@@ -215,3 +215,16 @@ gzip decompression/negotiation/opt-out and warmed allocations, bcrypt vectors an
 helper completion, chained database/password callbacks, timestamp offsets/epochs,
 SQLite bindings and commit/rollback during pipelined requests. CI runs both GC
 modes with the default runtime and `-Dwithout_mt` on every kernel in the matrix.
+
+All 68 examples pass in each of the four build combinations (default runtime or
+`-Dwithout_mt`, with or without `-Dgc_none`), about 8–9 seconds per suite on the
+shared host. Server fixtures exec the current spec executable to start a fresh
+runtime. A raw-fork version of the default-runtime core fixture intermittently
+crashed while dispatching accepts; it bypassed App's fork guard and continued
+with inherited runtime threads. The exec fixtures preserve singleworker default
+runtime coverage and retain actual multiworker coverage in the `-Dwithout_mt`
+builds. The small raw-fork socket helpers perform only native syscalls in children.
+
+Local native development symlinks under ignored `lib/` supplied the linker names
+for the host's installed libdeflate/SQLite runtime libraries; CI installs the
+corresponding development packages. No benchmarks or machine settings changed.

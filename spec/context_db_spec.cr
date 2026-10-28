@@ -103,6 +103,11 @@ module ContextDBFixture
   end
 end
 
+if ENV["RAYO_SPEC_FIXTURE"]? == "database"
+  ContextDBFixture.app.run(host: "127.0.0.1", port: ENV["RAYO_SPEC_PORT"].to_i,
+    workers: {{ flag?(:without_mt) ? 2 : 1 }}, database: ENV["RAYO_SPEC_DB_URL"], pool: 2)
+end
+
 Spec.before_suite { ContextDBFixture.execute("CREATE DATABASE #{ContextDBFixture::NAME}") }
 Spec.after_suite { ContextDBFixture.execute("DROP DATABASE #{ContextDBFixture::NAME}") }
 
@@ -137,18 +142,7 @@ describe "Context database integration" do
     listener = TCPServer.new("127.0.0.1", 0)
     port = listener.local_address.port
     listener.close
-    pid = LibC.fork
-    raise "fork failed" if pid < 0
-    if pid == 0
-      LibC.signal(15, LibC::SIG_DFL)
-      begin
-        ContextDBFixture.app.run(host: "127.0.0.1", port: port, workers: {{ flag?(:without_mt) ? 2 : 1 }}, database: ContextDBFixture::DB_URL, pool: 2)
-      rescue ex
-        STDERR.puts ex.inspect_with_backtrace
-        LibC._exit(1)
-      end
-    end
-    process = Process.new(Crystal::System::Process.new(pid))
+    process = start_fixture("database", {"RAYO_SPEC_PORT" => port.to_s, "RAYO_SPEC_DB_URL" => ContextDBFixture::DB_URL})
     begin
       ready = false
       400.times do

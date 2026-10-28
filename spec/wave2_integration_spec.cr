@@ -75,22 +75,17 @@ private def feature_response(socket)
   {status, headers, String.new(bytes)}
 end
 
+if ENV["RAYO_SPEC_FIXTURE"]? == "features"
+  ports = ENV["RAYO_SPEC_PORTS"].split(',').map(&.to_i)
+  WorkerFeatures.app.run(host: "127.0.0.1", ports: ports, workers: 1, database: nil)
+end
+
 describe "worker features" do
   it "initializes after fork, serves both listeners, wakes bcrypt and commits before responses" do
     listeners = Array.new(2) { TCPServer.new("127.0.0.1", 0) }
     ports = listeners.map(&.local_address.port)
     listeners.each &.close
-    pid = LibC.fork
-    raise "fork failed" if pid < 0
-    if pid == 0
-      begin
-        WorkerFeatures.app.run(host: "127.0.0.1", ports: ports, workers: 1, database: nil)
-      rescue ex
-        STDERR.puts ex.inspect_with_backtrace
-        LibC._exit(1)
-      end
-    end
-    process = Process.new(Crystal::System::Process.new(pid))
+    process = start_fixture("features", {"RAYO_SPEC_PORTS" => ports.join(',')})
     begin
       ports.each do |port|
         socket = nil.as(TCPSocket?)

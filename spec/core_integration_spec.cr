@@ -138,24 +138,17 @@ private def core_response(socket, head = false)
   {status, String.new(body), headers}
 end
 
+if ENV["RAYO_SPEC_FIXTURE"]? == "core"
+  ENV["URING_SLOTS"] = "32"
+  CoreFixture.app.run(host: "127.0.0.1", port: ENV["RAYO_SPEC_PORT"].to_i, workers: 1, database: nil)
+end
+
 describe "core HTTP integration" do
   it "serves pipelines, deferred work, spill-over rings and persistent connections" do
     listener = TCPServer.new("127.0.0.1", 0)
     port = listener.local_address.port
     listener.close
-    pid = LibC.fork
-    raise "fork failed" if pid < 0
-    if pid == 0
-      LibC.signal(15, LibC::SIG_DFL)
-      begin
-        # Eight small fixed tables force the integration traffic across rings.
-        ENV["URING_SLOTS"] = "32"
-        CoreFixture.app.run(host: "127.0.0.1", port: port, workers: 1)
-      rescue ex
-        STDERR.puts ex.inspect_with_backtrace
-        LibC._exit(1)
-      end
-    end
+    process = start_fixture("core", {"RAYO_SPEC_PORT" => port.to_s})
     begin
       ready = false
       200.times do
@@ -245,9 +238,8 @@ describe "core HTTP integration" do
       headers.should_not contain("text/plain")
       typed.close
     ensure
-      LibC.kill(pid, 15)
-      child_status = 0
-      LibC.waitpid(pid, pointerof(child_status), 0)
+      process.signal(Signal::TERM) if process.exists?
+      process.wait
     end
   end
 end
