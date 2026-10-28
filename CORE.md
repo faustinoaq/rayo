@@ -4,7 +4,8 @@
 [examples/hello.cr](examples/hello.cr) for a runnable app.
 
 - `App#get/post/put/patch/delete/options/head(path) { |ctx| ... }` registers routes
-  before `run(host: "0.0.0.0", port: 3000, workers: Sys.ncpu)`.
+  before `run(host: "0.0.0.0", port: 3000, workers: Sys.ncpu,
+  database: ENV["DATABASE_URL"]?, pool: 4)`.
 - Routes form a segment tree. Static segments take precedence over `:name`, then a
   trailing `*` or `*name`. Captures are receive-buffer slices. Missing paths return
   404; a matching path without that method returns 405 with `Allow`.
@@ -35,8 +36,8 @@ The request's input stays stable until completion. Later bytes have a separate
 buffer; later requests on that connection run after completion. This preserves wire
 order while allowing other connections to progress. Views expire when the response
 finishes. Application callback procs must be non-capturing; store request state in
-preallocated owner records. JSON and database Context extensions remain TODO hooks
-for their respective components.
+preallocated owner records. JSON and database Context extensions are loaded by App; see
+[ARCHITECTURE.md](ARCHITECTURE.md) for their APIs.
 
 ## Plain fd transport and timers
 
@@ -143,3 +144,33 @@ wait "$rayo_pid"
 
 Omit `-Dwithout_mt` to repeat the exact requested build. Stop only the recorded
 server PID. The benchmark requires no database or system configuration changes.
+
+## JSON and Postgres integration measurements
+
+The integrated suite passes 55 examples in both GC modes, including real Postgres
+queries through two forked workers, ordered pipelines, concurrent peers, errors,
+chained callbacks, disconnects, PG row arrays, JSON type checking, and warmed
+allocation counters for JSON and request/database callbacks. `rayo/pg` and `rayo/json`
+also compile independently without loading the server. `sys.cr` and `buf.cr` are
+unchanged.
+
+The JSON and PG examples were built with `--release -Dgc_none -Dwithout_mt` to
+avoid the background runtime allocation described above. Servers ran on CPU 6,
+the client on CPUs 7–8, using 100 connections, two seconds of concurrent warm-up
+and eight seconds of measurement per route. Precise RSS was sampled every 500 ms
+from `/proc/<pid>/smaps_rollup`; every sample after warm-up was identical.
+
+| Route | Requests/s | Warmed RSS (KiB) |
+| --- | ---: | ---: |
+| `/json` | 44,457.7 | 19,968 → 19,968 |
+| `/db` (users query, pool 4) | 27,432.7 | 20,204 → 20,204 |
+
+The PG run used its own uniquely named database and dropped it afterward.
+These are local measurements on a shared host. Reproduce the traffic with
+`CONNECTIONS=100 SECONDS=8 REQUEST_PATH=/json PORT=3000 bin/keepalive`;
+use `/db` against the PG example. The benchmark learns the response size once,
+so the route must return a stable status, header length and body length.
+
+Known integration gap: database callback captures are rejected before queuing
+at runtime, rather than at compile time. The ordinary block-taking API cannot
+perform the direct C-callback check; no capturing callback enters the PG queue.
