@@ -99,8 +99,10 @@ servers where every core and every millisecond counts.
 
 ## Requirements
 
-- Linux 6.1 or newer. The loop uses `IORING_SETUP_COOP_TASKRUN` to batch completions
-  and waits on ring fds with epoll, including when several rings are active.
+- Linux 6.1 or newer. The loop uses `IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN`
+  and waits directly in ring zero while it is the only active ring. Timer deadlines bound
+  that wait with `IORING_ENTER_EXT_ARG`. With several active rings, epoll watches their
+  eventfds with a 1 ms maximum wait to tolerate lost notifications on Linux 6.12/6.18.
   Newer kernels unlock the features marked in the roadmap.
 - x86-64 or arm64
 - Crystal 1.22+
