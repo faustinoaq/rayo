@@ -108,10 +108,11 @@ module Rayo::PG
   # Views into Conn's reusable buffers: consume in the callback or copy explicitly.
   struct Result
     getter size : Int32
+    getter rows_affected : Int64
     getter sqlstate : Bytes
     getter message : Bytes
 
-    def initialize(@data : Bytes, @size : Int32, @sqlstate : Bytes, @message : Bytes)
+    def initialize(@data : Bytes, @size : Int32, @sqlstate : Bytes, @message : Bytes, @rows_affected : Int64 = 0)
     end
 
     def error? : Bool

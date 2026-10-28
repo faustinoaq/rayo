@@ -47,6 +47,7 @@ module Rayo::PG
     @error = Buf.new(256)
     @code = Buf.new(8)
     @row_count = 0
+    @rows_affected = 0_i64
     @prepared = {} of Statement => Preparation
     @auth : Auth?
 
@@ -220,13 +221,20 @@ module Rayo::PG
         Wire.int(@rows, n)
         @rows.write(p, n)
         @row_count &+= 1
+      when 'C'.ord
+        raise Error.new("invalid CommandComplete") if n < 2 || p[n - 1] != 0
+        start = n - 2
+        while start >= 0 && p[start] >= 48 && p[start] <= 57
+          start &-= 1
+        end
+        @rows_affected = start < n - 2 ? Row.integer(Bytes.new(p + start + 1, n - start - 2)) : 0_i64
       when 'E'.ord
         read_error(p, n)
       when 'Z'.ord
         q = @queue[(@head % @max_depth).to_i32]
         @head &+= 1
         @prepared[q.statement] = Preparation::Failed if @prepared[q.statement]? == Preparation::Queued
-        result = Result.new(Bytes.new(@rows.ptr, @rows.len), @row_count, Bytes.new(@code.ptr, @code.len), Bytes.new(@error.ptr, @error.len))
+        result = Result.new(Bytes.new(@rows.ptr, @rows.len), @row_count, Bytes.new(@code.ptr, @code.len), Bytes.new(@error.ptr, @error.len), @rows_affected)
         begin
           q.deliver(result)
         ensure
@@ -271,6 +279,7 @@ module Rayo::PG
       @error.clear
       @code.clear
       @row_count = 0
+      @rows_affected = 0_i64
     end
 
     # Transport failures complete every outstanding callback in FIFO order.

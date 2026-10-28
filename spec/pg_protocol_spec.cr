@@ -184,3 +184,25 @@ describe Rayo::PG::Conn do
     end
   end
 end
+
+describe "CommandComplete" do
+  it "retains affected counts across fragments and resets them between queued queries" do
+    c = Rayo::PG::Conn.new("postgres://postgres@localhost/test")
+    total = 0_i64
+    begin
+      PGProtocolSpec.ready(c)
+      {"INSERT 0 12\0", "UPDATE 3\0", "DELETE 0\0", "CREATE TABLE\0", "SELECT 2\0"}.each do |tag|
+        c.query(Rayo::PG::Statement.new("SELECT 1"), state: pointerof(total).address.to_i64!) do |res, state|
+          Pointer(Int64).new(state.to_u64!).value &+= res.rows_affected
+        end
+        command = PGProtocolSpec.packet('C', tag.to_slice)
+        command.each { |b| c.on_data(pointerof(b), 1) }
+        ready = PGProtocolSpec.packet('Z', "I".to_slice)
+        c.on_data(ready.to_unsafe, ready.size)
+      end
+      total.should eq(17)
+    ensure
+      c.close
+    end
+  end
+end

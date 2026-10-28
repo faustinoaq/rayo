@@ -293,3 +293,34 @@ describe Rayo::PG do
     end
   end
 end
+
+describe "Postgres affected rows" do
+  it "distinguishes inserts, conflicts, updates, deletes and errors" do
+    c = Rayo::PG::BlockingTransport.new(PGSpec::DB_URL)
+    begin
+      PGSpec.execute(c, "CREATE TEMP TABLE affected(id integer PRIMARY KEY)")
+      {
+        {"INSERT INTO affected VALUES (1), (2)", 2_i64},
+        {"INSERT INTO affected VALUES (1) ON CONFLICT DO NOTHING", 0_i64},
+        {"UPDATE affected SET id = id + 10", 2_i64},
+        {"DELETE FROM affected WHERE id = 11", 1_i64},
+        {"DELETE FROM affected WHERE id = 11", 0_i64},
+      }.each do |(sql, expected)|
+        count = -1_i64
+        c.query(Rayo::PG::Statement.new(sql), state: pointerof(count).address.to_i64!) do |res, state|
+          res.error?.should be_false
+          Pointer(Int64).new(state.to_u64!).value = res.rows_affected
+        end
+        c.drain
+        count.should eq(expected)
+      end
+      c.query(Rayo::PG::Statement.new("SELECT 1/0")) do |res|
+        res.error?.should be_true
+        res.rows_affected.should eq(0)
+      end
+      c.drain
+    ensure
+      c.close
+    end
+  end
+end
