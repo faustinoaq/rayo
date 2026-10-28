@@ -11,6 +11,7 @@ module Rayo
     property param_count = 0
     getter code = 200
     getter content_type : String | Bytes = "text/plain; charset=utf-8"
+    property compress = true
     getter deferred = false
     getter serial = 0_u64
     @names = StaticArray(String, Router::MAX_PARAMS).new("")
@@ -32,6 +33,7 @@ module Rayo
       @code = 200
       @content_type = "text/plain; charset=utf-8"
       @deferred = false
+      @compress = true
       @output.clear
       @headers.clear
     end
@@ -87,6 +89,21 @@ module Rayo
       @headers << name << ": "
       @headers.write(bytes.to_unsafe, bytes.size)
       @headers << "\r\n"
+    end
+
+    # Borrowed response header view, valid until the next header update.
+    def response_header(name : String) : Bytes
+      offset = 0
+      while offset < @headers.len
+        p = @headers.ptr + offset
+        e = LibSys.memmem(p, @headers.len - offset, "\r\n".to_unsafe, 2).as(UInt8*)
+        colon = LibC.memchr(p, 58, e - p).as(UInt8*)
+        if HTTP.equal(Bytes.new(p, (colon - p).to_i32), name, true)
+          return Bytes.new(colon + 2, (e - colon - 2).to_i32)
+        end
+        offset += (e - p).to_i32 + 2
+      end
+      Bytes.empty
     end
 
     def capture(name : String, value : Bytes) : Nil

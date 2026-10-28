@@ -122,6 +122,7 @@ module Rayo::Server
     ctx = c.context
     begin
       @@app.not_nil!.after_response(ctx)
+      @@app.not_nil!.compress_response(ctx)
     rescue
       ctx.output.clear
       ctx.status(500)

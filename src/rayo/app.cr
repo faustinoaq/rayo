@@ -5,10 +5,19 @@ require "./context"
 require "./server"
 require "./context/json"
 require "./context/db"
+require "./gzip"
 
 module Rayo
   class App
     getter router = Router.new
+    property gzip = false
+    property gzip_min_size = 1024
+    @compressor : Gzip? = nil
+
+    def compress_response(ctx : Context) : Nil
+      @compressor.try &.apply(ctx)
+    end
+
     @before = [] of Router::Handler
     @after = [] of Router::Handler
     @worker_start = [] of Proc(Int32, Nil)
@@ -64,6 +73,7 @@ module Rayo
         fds.each { |fd| LibC.close(fd) }
         raise "io_uring setup failed (Linux 6.1+ required)"
       end
+      @compressor = Gzip.new(@gzip_min_size) if @gzip
       Server.init(self, Uring.capacity)
       Server.database = PG::WorkerPool.new(database, pool) if database
       @worker_start.each &.call(index)
