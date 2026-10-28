@@ -12,8 +12,17 @@ module Rayo::SQLite
     @size = 0
     @failed = false
 
+    # Transaction control is prepared once: sqlite3_exec would parse (and allocate)
+    # the SQL on every batch.
+    @begin : Statement
+    @commit : Statement
+    @rollback : Statement
+
     def initialize(@database : Database, @capacity = 1024)
       raise ArgumentError.new("capacity must be positive") if @capacity < 1
+      @begin = @database.prepare("BEGIN")
+      @commit = @database.prepare("COMMIT")
+      @rollback = @database.prepare("ROLLBACK")
       @pending = Pointer(Context::Deferred).malloc(@capacity)
       @finishing = Pointer(Context::Deferred).malloc(@capacity)
     end
@@ -24,7 +33,7 @@ module Rayo::SQLite
 
     def transaction(ctx : Context, &) : Nil
       flush if @size == @capacity
-      @database.exec("BEGIN") if @size == 0
+      @begin.run if @size == 0
       @pending[@size] = ctx.defer
       @size &+= 1
       begin
@@ -38,10 +47,10 @@ module Rayo::SQLite
       while @size > 0
         failed = @failed
         begin
-          @database.exec(failed ? "ROLLBACK" : "COMMIT")
+          (failed ? @rollback : @commit).run
         rescue
           failed = true
-          @database.exec("ROLLBACK") rescue nil
+          @rollback.run rescue nil
         end
         count = @size
         @size = 0

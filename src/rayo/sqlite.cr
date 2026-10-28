@@ -146,6 +146,13 @@ module Rayo::SQLite
       Bytes.new(ptr, LibSQLite.column_bytes(@ptr, index))
     end
 
+    # Steps a statement that returns no rows (BEGIN, COMMIT, an UPDATE) and resets it.
+    def run : Nil
+      step
+    ensure
+      reset
+    end
+
     def reset : Nil
       check_open
       @row = false

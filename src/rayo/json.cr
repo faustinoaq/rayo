@@ -500,8 +500,9 @@ module Rayo::JSON
     end
 
     private def quoted(v : String | Bytes)
+      # Escape only: values come from the app or the database, which store UTF-8 already;
+      # validating every string cost ~4% of a request. Reader.valid? checks client input.
       b = v.is_a?(String) ? v.to_slice : v
-      raise Error.new("invalid UTF-8") unless JSON.valid_utf8?(b)
       @buf << 34_u8
       @buf.json_escape(b.to_unsafe, b.size)
       @buf << 34_u8
