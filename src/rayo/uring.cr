@@ -1,6 +1,5 @@
 require "./sys"
 require "c/sys/mman"
-require "c/sys/eventfd"
 
 module Rayo
   lib LibUring
@@ -94,7 +93,6 @@ module Rayo
     property to_submit = 0_u32
     property accepting = 0 # multishot accepts armed here (one per listener)
     property used = 0      # slots taken: accepted and not yet closed by the kernel
-    property efd = -1
 
     @ring_mem : UInt8*
     @ring_size : UInt64
@@ -121,7 +119,7 @@ module Rayo
     def self.create(base : Int32, slots : Int32, sq : UInt32, cq : UInt32) : Ring?
       pa = LibUring::Params.new
       pa.cq_entries = cq
-      pa.flags = Uring::SETUP_CQSIZE | Uring::SETUP_SUBMIT_ALL | Uring::SETUP_SINGLE_ISSUER | Uring::SETUP_DEFER_TASKRUN
+      pa.flags = Uring::SETUP_CQSIZE | Uring::SETUP_SUBMIT_ALL | Uring::SETUP_SINGLE_ISSUER | Uring::SETUP_COOP_TASKRUN
       fd = LibC.syscall(Uring::SYS_SETUP, sq, pointerof(pa)).to_i32
       return nil if fd < 0
       r = new(fd, base, slots, pointerof(pa))
@@ -193,7 +191,6 @@ module Rayo
 
     def dispose : Nil
       LibC.close(@fd)
-      LibC.close(@efd) if @efd >= 0
       LibC.munmap(@ring_mem, @ring_size) unless @ring_mem.null?
       LibC.munmap(@sqes, @sq_entries.to_u64 * 64) unless @sqes.null?
       LibC.munmap(@bring, (Uring::NBUF * 16).to_u64) unless @bring.null?
@@ -266,14 +263,12 @@ module Rayo
       @btail &+= 1
     end
 
-    # Signals efd whenever completions are pending (with deferred task work: as soon as
-    # there is work for this ring), so epoll can wait on several rings at once.
+    # Poll the CQ itself. DEFER_TASKRUN needs enter(GETEVENTS) before a CQE exists;
+    # its eventfd wakeups can be lost on 6.12/6.18 (the deferred signal's pending
+    # bit stays set). COOP_TASKRUN batches work until syscall return, so ring-fd
+    # readiness wakes epoll without relying on those eventfd notifications.
     def watch(ep : Int32) : Nil
-      return if @efd >= 0
-      @efd = LibC.eventfd(0, 0o4000 | 0o2000000) # EFD_NONBLOCK | EFD_CLOEXEC
-      raise "eventfd failed" if @efd < 0
-      raise "eventfd registration failed" if LibC.syscall(Uring::SYS_REGISTER, @fd, Uring::REGISTER_EVENTFD, pointerof(@efd), 1) < 0
-      raise "epoll registration failed" if Sys.epoll(ep, Sys::EPOLL_CTL_ADD, @efd, Sys::EPOLLIN | Sys::EPOLLET) < 0
+      raise "epoll registration failed" if Sys.epoll(ep, Sys::EPOLL_CTL_ADD, @fd, Sys::EPOLLIN) < 0
     end
 
     def publish_bufs : Nil
@@ -333,10 +328,9 @@ module Rayo
     SETUP_CQSIZE        = 1_u32 << 3
     SETUP_SUBMIT_ALL    = 1_u32 << 7
     SETUP_SINGLE_ISSUER = 1_u32 << 12
-    SETUP_DEFER_TASKRUN = 1_u32 << 13
+    SETUP_COOP_TASKRUN  = 1_u32 << 8
     FEAT_SINGLE_MMAP    = 1_u32 << 0
     ENTER_GETEVENTS     =          1_u32
-    REGISTER_EVENTFD    =              4
     REGISTER_FILES2     =             13
     REGISTER_PBUF_RING  =             22
     OFF_SQES            = 0x10000000_i64

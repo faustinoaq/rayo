@@ -99,7 +99,8 @@ servers where every core and every millisecond counts.
 
 ## Requirements
 
-- Linux 6.1 or newer (the minimum for `IORING_SETUP_DEFER_TASKRUN`, which the loop uses).
+- Linux 6.1 or newer. The loop uses `IORING_SETUP_COOP_TASKRUN` to batch completions
+  and waits on ring fds with epoll, including when several rings are active.
   Newer kernels unlock the features marked in the roadmap.
 - x86-64 or arm64
 - Crystal 1.22+
