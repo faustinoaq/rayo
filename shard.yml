@@ -1,0 +1,13 @@
+name: rayo
+version: 0.1.0
+
+description: |
+  Fast Crystal web framework for Linux: io_uring, a pipelined Postgres client and a
+  request path that allocates nothing, so it can run without a garbage collector.
+
+authors:
+  - Faustino Aguilar <faustinoaq@gmail.com>
+
+crystal: ">= 1.22.0"
+
+license: MIT
