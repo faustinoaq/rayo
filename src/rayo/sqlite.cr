@@ -109,8 +109,12 @@ module Rayo::SQLite
     end
 
     private def check_open : Nil
-      @database.check_open
-      raise "SQLite statement closed" if @ptr.null?
+      # sqlite3_close refuses a database with live statements. Only a closed
+      # statement can outlive its database; keep that error on the cold path.
+      if @ptr.null?
+        @database.check_open
+        raise "SQLite statement closed"
+      end
     end
 
     def bind(index : Int32, value : Int) : self
@@ -179,8 +183,11 @@ module Rayo::SQLite
     end
 
     def str(index : Int32) : Bytes
-      raise "NULL SQLite column" if null?(index)
+      column(index)
       ptr = LibSQLite.column_text(@ptr, index)
+      # Text normally has a pointer, including empty strings. Check its SQL type
+      # only for NULL pointers, preserving empty BLOB and NULL behavior.
+      raise "NULL SQLite column" if ptr.null? && LibSQLite.column_type(@ptr, index) == 5
       Bytes.new(ptr, LibSQLite.column_bytes(@ptr, index))
     end
 

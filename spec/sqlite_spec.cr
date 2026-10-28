@@ -2,6 +2,29 @@ require "./spec_helper"
 require "../src/rayo/sqlite"
 
 describe Rayo::SQLite do
+  it "keeps text conversions, empty values and NULL errors on reused rows" do
+    db = Rayo::SQLite::Database.new(":memory:")
+    stmt = db.prepare("SELECT '', x'', 123, NULL")
+    begin
+      expect_raises(Rayo::SQLite::Error) { db.close }
+      stmt.step.should be_true
+      stmt.str(0).should be_empty
+      stmt.str(1).should be_empty
+      stmt.str(2).should eq("123".to_slice)
+      expect_raises(Exception, "NULL SQLite column") { stmt.str(3) }
+      expect_raises(IndexError) { stmt.str(4) }
+      stmt.reset
+      expect_raises(IndexError) { stmt.str(0) }
+      stmt.close
+      expect_raises(Exception, "SQLite statement closed") { stmt.step }
+      db.close
+      expect_raises(Exception, "SQLite database closed") { stmt.step }
+    ensure
+      stmt.close
+      db.close
+    end
+  end
+
   it "refreshes column bounds after SQLite automatically reprepares a statement" do
     db = Rayo::SQLite::Database.new(":memory:")
     db.exec("CREATE TABLE shape(a INTEGER); INSERT INTO shape VALUES (1)")
