@@ -60,16 +60,22 @@ describe Rayo::Bcrypt do
         n = LibC.read(pool.fd, bytes.to_unsafe, 32).to_i32
         pool.on_data(bytes.to_unsafe, n)
       end
-      GC.stats
-      before = GC.stats.total_bytes
-      32.times do
-        pool.hash("hello".to_slice, state: pointerof(done).address) do |res, state|
-          Pointer(UInt64).new(state).value &+= res.ok? ? 1_u64 : 1000_u64
+      # Blocking reads let SYSMON allocate in the default runtime: keep the
+      # quietest of several windows, as the coalescer spec does.
+      minimum = UInt64::MAX
+      4.times do
+        GC.stats
+        before = GC.stats.total_bytes
+        8.times do
+          pool.hash("hello".to_slice, state: pointerof(done).address) do |res, state|
+            Pointer(UInt64).new(state).value &+= res.ok? ? 1_u64 : 1000_u64
+          end
+          n = LibC.read(pool.fd, bytes.to_unsafe, 32).to_i32
+          pool.on_data(bytes.to_unsafe, n)
         end
-        n = LibC.read(pool.fd, bytes.to_unsafe, 32).to_i32
-        pool.on_data(bytes.to_unsafe, n)
+        minimum = Math.min(minimum, GC.stats.total_bytes - before)
       end
-      assert_no_request_allocations(GC.stats.total_bytes - before)
+      assert_no_request_allocations(minimum)
       done.should eq(38)
       expect_raises(ArgumentError, "72 bytes") { pool.hash(Bytes.new(73)) { |_, _| } }
       expect_raises(ArgumentError, "invalid bcrypt hash") { pool.verify("hi".to_slice, "bad".to_slice) { |_, _| } }
