@@ -1,0 +1,5 @@
+bcrypt_cost=10 warmup_seconds=2 measure_seconds=3
+/gzip: connections=32 requests=54144 warmed_RSS_KiB=[19204, 19204, 19204, 19204, 19204, 19204, 19204]
+/plain: connections=32 requests=54368 warmed_RSS_KiB=[20228, 20228, 20228, 20228, 20228, 20228, 20228]
+/hash: connections=32 requests=64 warmed_RSS_KiB=[20372, 20372, 20372]
+/count: connections=32 requests=96224 warmed_RSS_KiB=[20372, 20372, 20372, 20372, 20372, 20372, 20372]

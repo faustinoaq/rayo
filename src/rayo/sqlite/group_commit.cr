@@ -1,5 +1,5 @@
 require "../sqlite"
-require "../context/db"
+require "../app"
 require "../uring"
 
 module Rayo::SQLite

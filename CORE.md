@@ -216,8 +216,8 @@ helper completion, chained database/password callbacks, timestamp offsets/epochs
 SQLite bindings and commit/rollback during pipelined requests. CI runs both GC
 modes with the default runtime and `-Dwithout_mt` on every kernel in the matrix.
 
-All 68 examples pass in each of the four build combinations (default runtime or
-`-Dwithout_mt`, with or without `-Dgc_none`), about 8–11 seconds per suite on the
+All 69 examples pass in each of the four build combinations (default runtime or
+`-Dwithout_mt`, with or without `-Dgc_none`), about 9–15 seconds per suite on the
 shared host. Server fixtures exec the current spec executable to start a fresh
 runtime. A raw-fork version of the default-runtime core fixture intermittently
 crashed while dispatching accepts. Fresh-exec kernel runs later exposed the
@@ -229,7 +229,8 @@ builds. The small raw-fork socket helpers perform only native syscalls in childr
 
 Local native development symlinks under ignored `lib/` supplied the linker names
 for the host's installed libdeflate/SQLite runtime libraries; CI installs the
-corresponding development packages. No benchmarks or machine settings changed.
+corresponding development packages. No machine settings changed. Optional-driver memory checks run under the shared
+benchmark lock.
 
 
 Kernel testing with fresh runtimes exposed a concrete GC lifetime bug: the ring
@@ -242,3 +243,33 @@ This is independent of the unsupported runtime fork configuration. Default-runti
 database allocation samples allow monitor noise; `-Dwithout_mt` samples still
 require exactly zero. SQLite row iteration and bcrypt submissions also have warmed
 managed-allocation checks.
+
+### Optional-driver memory check
+
+The release fixture built with `-Dgc_none -Dwithout_mt` stayed flat in every warmed
+`smaps_rollup` RSS sample on 32 persistent connections. Each route warmed for two
+seconds, then drove a three-second target window (finishing each in-flight batch).
+The bcrypt route hashes and verifies through the loop at cost 10, exercising the
+interleaved engine. SQLite reads reuse a statement prepared in the worker hook.
+These are memory checks on a shared host, not throughput comparisons.
+
+| Route | Requests in measurement | Warmed RSS (KiB) |
+| --- | ---: | ---: |
+| gzip | 54,144 | 19,204 → 19,204 |
+| plain opt-out | 54,368 | 20,228 → 20,228 |
+| bcrypt hash → verify | 64 | 20,372 → 20,372 |
+| SQLite prepared read | 96,224 | 20,372 → 20,372 |
+
+[Captured samples](benchmarks/wave2-memory.txt). Reproduce after installing the
+native development packages (this host also used `LIBRARY_PATH=$PWD/lib/native`):
+
+```sh
+mkdir -p bin
+crystal build spec/wave2_integration_spec.cr --release -Dgc_none -Dwithout_mt -o bin/wave2-load
+flock /home/user/experiments/crystal-challenges/bench/.lock python3 benchmarks/wave2_memory.py bin/wave2-load
+```
+
+The script starts and stops only its recorded fixture PID, chooses two free ports,
+and uses an in-memory SQLite database. It does not open Postgres or alter settings.
+A compile spec also checks that `rayo/sqlite/group_commit` can be required directly;
+its loop dependencies load without requiring the umbrella entry point first.

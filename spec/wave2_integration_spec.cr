@@ -22,7 +22,7 @@ module WorkerFeatures
       group = Rayo::SQLite::GroupCommit.new(db)
       group.attach
       WorkerFeatures.group = group
-      pool = Rayo::Bcrypt::Pool.new(cost: 4)
+      pool = Rayo::Bcrypt::Pool.new(cost: (ENV["RAYO_SPEC_BCRYPT_COST"]? || "4").to_i)
       GC.collect
       pool.attach
       WorkerFeatures.passwords = pool
