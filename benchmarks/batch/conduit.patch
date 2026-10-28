@@ -111,7 +111,7 @@
 +      end
 +      @rounds = Array(Round).new(8) { |i| Round.new(@transports[i % 2]) }
 +      @coordinator = Rayo::PG::Coalescer(Request).new(batch_size: 1024, groups: 32, depth: 8,
-+        parameters: 0, window_us: 12500, max_window_us: 25000) do |group|
++        parameters: 0, window_us: 17500, max_window_us: 35000) do |group|
 +        Conduit::Reads.driver.not_nil!.dispatch(group)
 +      end
 +      @coordinator.attach

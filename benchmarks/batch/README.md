@@ -15,7 +15,7 @@ across requests.
 
 Eight reusable round slots share the existing two read transports per worker.
 Groups have up to 1,024 requests, a bounded 32-group queue and depth eight. The
-collection window is 12.5 ms per observed in-flight group, capped at 25 ms; idle
+collection window is 17.5 ms per observed in-flight group, capped at 35 ms; idle
 arrivals dispatch in the same loop turn. Each group calls `done` after its last
 query/fan-out. Dedicated read sessions keep the reference's planner settings.
 
