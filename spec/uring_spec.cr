@@ -76,6 +76,7 @@ describe "single-ring wait" do
   it "wakes for a loop timer without socket completions" do
     pair = uninitialized Int32[2]
     LibC.socketpair(1, 1, 0, pair).should eq(0)
+    started = Rayo::Sys.now_ns(Rayo::Sys::CLOCK_MONOTONIC)
     pid = LibC.fork
     raise "fork failed" if pid < 0
     if pid == 0
@@ -95,7 +96,6 @@ describe "single-ring wait" do
     begin
       Rayo::Sys.epoll(ep, Rayo::Sys::EPOLL_CTL_ADD, pair[0], Rayo::Sys::EPOLLIN).should eq(0)
       event = Rayo::Sys::EpollEvent.new
-      started = Rayo::Sys.now_ns(Rayo::Sys::CLOCK_MONOTONIC)
       loop do
         result = LibC.epoll_wait(ep, pointerof(event), 1, 1000)
         next if result < 0 && Rayo::Sys.errno == Rayo::Sys::EINTR
