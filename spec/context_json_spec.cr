@@ -81,7 +81,7 @@ describe "Context JSON" do
       end
       # total_bytes is process-wide: a runtime thread may allocate a few bytes meanwhile. One
       # allocation per call would be at least 16 KB over these 1000 iterations.
-      (GC.stats.total_bytes - before).should be < 1024
+      assert_no_request_allocations(GC.stats.total_bytes - before)
     ensure
       LibC.free(ctx.output.ptr)
       LibC.free(ctx.headers.ptr)

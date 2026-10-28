@@ -1,16 +1,16 @@
 require "crypto/blowfish"
 
-# The standard hexadecimal digits of pi, supplied by Crystal's Blowfish tables.
-class Crypto::Blowfish
-  def self.initial_words(dst : UInt32*) : Nil
-    dst.copy_from(P.to_unsafe, 18)
-    (dst + 18).copy_from(S.to_unsafe, 1024)
-  end
-end
-
 # Independent EksBlowfish states, interleaved at each round to overlap S-box loads.
 # Scratch state is overwritten on every call. All lanes execute every cost-10 round.
 module Rayo::Bcrypt::Lanes
+  # The standard hexadecimal digits of pi, supplied by Crystal's Blowfish tables.
+  class Tables < ::Crypto::Blowfish
+    def self.initial_words(dst : UInt32*) : Nil
+      dst.copy_from(P.to_unsafe, 18)
+      (dst + 18).copy_from(S.to_unsafe, 1024)
+    end
+  end
+
   ALPHABET = "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
   MAGIC    = StaticArray[0x4f727068_u32, 0x65616e42_u32, 0x65686f6c_u32, 0x64657253_u32, 0x63727944_u32, 0x6f756274_u32]
 
@@ -117,7 +117,7 @@ module Rayo::Bcrypt::Lanes
     def hash(passwords : UInt8**, lengths : Int32*, settings : UInt8**, output : UInt8*) : Nil
       saltbytes = uninitialized UInt8[16]
       N.times do |k|
-        Crypto::Blowfish.initial_words(@st + k * 1042)
+        Tables.initial_words(@st + k * 1042)
         Lanes.decode(settings[k] + 7, saltbytes.to_unsafe, 16)
         pos = 0
         18.times do |i|

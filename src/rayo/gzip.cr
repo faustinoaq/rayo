@@ -94,6 +94,7 @@ module Rayo
     end
 
     def apply(ctx : Context) : Nil
+      raise "gzip compressor closed" if @compressor.null?
       return unless ctx.compress && ctx.output.len >= @min_size && ctx.code >= 200 && ctx.code != 204 && ctx.code != 205 && ctx.code != 304 && ctx.code != 206
       return unless ctx.response_header("Content-Encoding").empty? && ctx.response_header("Content-Range").empty?
       vary = ctx.response_header("Vary")

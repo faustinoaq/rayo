@@ -120,7 +120,7 @@ describe Rayo::JSON::Writer do
       nil
     end
     allocated = snapshots[101] - snapshots[1]
-    allocated.should eq(0)
+    assert_no_request_allocations(allocated)
   end
 end
 

@@ -76,6 +76,7 @@ module Rayo::SQLite
   class Statement
     @ptr = Pointer(Void).null
     @row = false
+    @done = false
 
     def initialize(@database : Database, sql : String)
       rc = LibSQLite.prepare(@database.ptr, sql.to_unsafe, sql.bytesize, 1_u32, pointerof(@ptr), Pointer(UInt8*).null)
@@ -115,9 +116,11 @@ module Rayo::SQLite
     # true = row available, false = done. Views expire on step/reset/close.
     def step : Bool
       check_open
+      return false if @done
       @row = false
       rc = LibSQLite.step(@ptr)
       return @row = true if rc == 100
+      @done = true
       raise Error.new(rc) unless rc == 101
       false
     end
@@ -146,6 +149,7 @@ module Rayo::SQLite
     def reset : Nil
       check_open
       @row = false
+      @done = false
       # reset reports the previous step's error, already delivered by step.
       LibSQLite.reset(@ptr)
       LibSQLite.clear(@ptr)

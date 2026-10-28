@@ -11,6 +11,7 @@ describe Rayo::SQLite do
       insert.bind(1, 1).bind(2, "Ana").bind(3, nil)
       insert.step.should be_false
       db.rows_affected.should eq(1)
+      insert.step.should be_false # DONE must not implicitly execute the INSERT again.
       insert.reset
       insert.bind(1, 2).bind(2, "雪".to_slice).bind(3, 42)
       insert.step.should be_false
@@ -25,6 +26,17 @@ describe Rayo::SQLite do
       expect_raises(IndexError) { query.str(3) }
       query.step.should be_false
       query.reset
+      GC.stats
+      before = GC.stats.total_bytes
+      100.times do
+        while query.step
+          query.i64(0)
+          query.str(1)
+          query.null?(2)
+        end
+        query.reset
+      end
+      assert_no_request_allocations(GC.stats.total_bytes - before)
       insert.bind(1, 2)
       expect_raises(Rayo::SQLite::Error) { insert.step }
       insert.reset

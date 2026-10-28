@@ -61,7 +61,7 @@ describe Rayo::Gzip do
         ctx.text(body)
         gzip.apply(ctx)
       end
-      (GC.stats.total_bytes - before).should be < 1024
+      assert_no_request_allocations(GC.stats.total_bytes - before)
     ensure
       gzip.close
       LibC.free(ctx.output.ptr)
