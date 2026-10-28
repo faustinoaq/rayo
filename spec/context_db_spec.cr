@@ -1,6 +1,7 @@
 require "./spec_helper"
 require "socket"
 require "random/secure"
+require "../src/rayo/bcrypt"
 
 class Rayo::Context
   property allocation_before = 0_u64
@@ -14,6 +15,8 @@ module ContextDBFixture
     url.path = "/#{NAME}"
     url.to_s
   end
+  class_property passwords : Rayo::Bcrypt::Pool? = nil
+
   ONE  = Rayo::PG::Statement.new("SELECT $1::int8, 'Ana'::text")
   ROWS = Rayo::PG::Statement.new("SELECT generate_series(1, 3)::int8")
   BAD  = Rayo::PG::Statement.new("SELECT 1 / 0")
@@ -37,6 +40,23 @@ module ContextDBFixture
 
   def self.app
     app = Rayo::App.new
+    app.on_worker_start do |_index|
+      pool = Rayo::Bcrypt::Pool.new(cost: 4)
+      pool.attach
+      ContextDBFixture.passwords = pool
+    end
+    app.get("/db-hash") do |ctx|
+      ctx.db.query(ONE, 1) do |res, ctx|
+        ContextDBFixture.passwords.not_nil!.hash(ctx, "hello".to_slice) do |res, ctx|
+          ctx.json(ok: res.ok?)
+        end
+      end
+    end
+    app.get("/hash-db") do |ctx|
+      ContextDBFixture.passwords.not_nil!.hash(ctx, "hello".to_slice) do |res, ctx|
+        ctx.db.query(ONE, 8) { |res, ctx| ctx.json(id: res.first?.not_nil!.i64(0)) }
+      end
+    end
     app.get("/one/:id") do |ctx|
       ctx.db.query(ONE, ctx.param_i64("id")) do |res, ctx|
         if row = res.first?
@@ -145,6 +165,9 @@ describe "Context database integration" do
       end
       ready.should be_true
       socket = db_connect(port)
+      socket << "GET /db-hash HTTP/1.1\r\n\r\nGET /hash-db HTTP/1.1\r\n\r\n"
+      db_response(socket)[1].should eq(%q({"ok":true}))
+      db_response(socket)[1].should eq(%q({"id":8}))
       128.times { |i| socket << "GET /one/#{i} HTTP/1.1\r\n\r\n" }
       128.times { |i| db_response(socket)[1].should eq(%({"id":#{i},"name":"Ana"})) }
       socket << "GET /rows HTTP/1.1\r\n\r\nGET /error HTTP/1.1\r\n\r\nGET /handled HTTP/1.1\r\n\r\nGET /raise HTTP/1.1\r\n\r\nGET /chain HTTP/1.1\r\n\r\n"

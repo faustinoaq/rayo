@@ -7,11 +7,13 @@ module Rayo::Server
 end
 
 class Rayo::Context
+  property work_pending = 0
   property db_pending = 0
   property db_failed = false
 
   def reset(request : HTTP::Request) : Nil
     previous_def(request)
+    @work_pending = 0
     @db_pending = 0
     @db_failed = false
   end

@@ -75,7 +75,7 @@ module Rayo::PG
           @pool.release(self)
           if ctx
             ctx.db_pending -= 1
-            if ctx.db_pending == 0
+            if ctx.db_pending == 0 && ctx.work_pending == 0
               ctx.database_error if ctx.db_failed
               handle.finish
             end
