@@ -144,12 +144,18 @@
      end
    end
  
-@@ -253,6 +288,6 @@
+@@ -253,6 +288,12 @@
    end
  
    def self.enqueue(ctx, kind, viewer, limit = 1_i64, offset = 0_i64, key = Bytes.empty)
 -    driver.not_nil!.queues[kind < 6 ? 0 : kind - 5] << Request.new(ctx.defer, kind, viewer, limit, offset, key)
-+    driver.not_nil!.coordinator.enqueue(Request.new(ctx.defer, kind, viewer, limit, offset, key), key: kind < 6 ? 0 : kind - 5)
++    coordinator = driver.not_nil!.coordinator
++    queue = kind < 6 ? 0 : kind - 5
++    unless coordinator.available?(queue)
++      Conduit.error(ctx, 503)
++      return
++    end
++    coordinator.enqueue(Request.new(ctx.defer, kind, viewer, limit, offset, key), key: queue)
    end
  end
 --- a/src/reads_sql.cr
