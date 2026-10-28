@@ -436,13 +436,20 @@ module Rayo::JSON
     end
   end
 
-  struct Writer
+  class Writer
     @stack = StaticArray(UInt8, 64).new(0_u8)
     @depth = 0
     @root = false
     @pending = false
 
     def initialize(@buf : Rayo::Buf)
+    end
+
+    def reset : self
+      @depth = 0
+      @root = false
+      @pending = false
+      self
     end
 
     private def before

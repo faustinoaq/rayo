@@ -1,5 +1,6 @@
 require "./http"
 require "./router"
+require "./json"
 
 module Rayo
   # Views expire when the response finishes. A deferred response keeps its input pinned.
@@ -15,7 +16,14 @@ module Rayo
     @names = StaticArray(String, Router::MAX_PARAMS).new("")
     @values = StaticArray(Bytes, Router::MAX_PARAMS).new(Bytes.empty)
 
+    @json_writer : JSON::Writer
+
+    private def json_writer : JSON::Writer
+      @json_writer.reset
+    end
+
     def initialize(@id : Int32)
+      @json_writer = JSON::Writer.new(@output)
     end
 
     def reset(@request : HTTP::Request) : Nil

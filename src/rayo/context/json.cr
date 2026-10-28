@@ -4,12 +4,12 @@ require "../json"
 class Rayo::Context
   def json(**fields) : Nil
     @content_type = "application/json"
-    JSON::Writer.new(@output).value(fields)
+    json_writer.value(fields)
   end
 
   def json(&) : Nil
     @content_type = "application/json"
-    writer = JSON::Writer.new(@output)
+    writer = json_writer
     yield writer
   end
 

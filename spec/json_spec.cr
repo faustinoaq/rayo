@@ -107,11 +107,12 @@ describe Rayo::JSON::Writer do
     b = Rayo::Buf.new(8192)
     # Warm up runtime accounting before measuring.
     GC.stats
+    j = Rayo::JSON::Writer.new(b)
     snapshots = uninitialized UInt64[102]
     102.times do |iteration|
       snapshots[iteration] = GC.stats.total_bytes
       b.clear
-      j = Rayo::JSON::Writer.new(b)
+      j.reset
       j.object { j.field "x", 0.1; j.field "s", "hello" }
       r = Rayo::JSON::Reader.new(Bytes.new(b.ptr, b.len))
       r["x"].f64
@@ -142,5 +143,40 @@ describe Rayo::JSON do
     j = Rayo::JSON::Writer.new(b)
     j.array { j.value(0.1); j.value(1e21); j.value(-0.0) }
     String.new(b.ptr, b.len).should eq("[0.1,1e21,-0.0]")
+  end
+end
+
+private struct CustomJSONValue
+  def to_json(j : Rayo::JSON::Writer) : Nil
+    j.object { j.field("id", 1) }
+  end
+end
+
+private struct CustomJSONScalar
+  def to_json(j : Rayo::JSON::Writer) : Nil
+    j.value("value")
+  end
+end
+
+describe "custom JSON writer state" do
+  it "shares separators and pending fields across custom serializers and blocks" do
+    b = Rayo::Buf.new(256)
+    j = Rayo::JSON::Writer.new(b)
+    begin
+      j.array do
+        j.value(CustomJSONValue.new)
+        j.value(CustomJSONValue.new)
+        j.object do
+          j.field("custom", CustomJSONScalar.new)
+          j.field("nested") { j.array { j.value(CustomJSONScalar.new); j.value(2) } }
+        end
+      end
+      Bytes.new(b.ptr, b.len).should eq(%q([{"id":1},{"id":1},{"custom":"value","nested":["value",2]}]).to_slice)
+      b.clear
+      j.reset.value(CustomJSONScalar.new)
+      Bytes.new(b.ptr, b.len).should eq(%q("value").to_slice)
+    ensure
+      LibC.free(b.ptr)
+    end
   end
 end
