@@ -109,6 +109,10 @@ crystal spec            # with the GC
 crystal spec -Dgc_none  # without it: the request path must not allocate
 ```
 
+CI runs the specs on the GitHub runner's kernel and, in KVM guests booted with
+[virtme-ng](https://github.com/arighi/virtme-ng), on Linux 6.1, 6.6, 6.12, 6.18 and 7.2
+(`.github/workflows/kernels.yml`), so features of newer kernels are tested on those kernels.
+
 Postgres specs use `RAYO_PG_URL` (default `postgres://postgres:postgres@127.0.0.1:5432/postgres`).
 
 ## License

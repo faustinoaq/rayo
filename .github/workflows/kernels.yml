@@ -1,0 +1,51 @@
+# Runs the specs under several Linux kernels, from the 6.1 floor to the newest stable, each
+# booted in a KVM guest with virtme-ng (Ubuntu mainline builds). The runner's own kernel only
+# covers one version; io_uring features differ between them.
+name: kernels
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: [v6.1.190, v6.6.160, v6.12.114, v6.18.59, v7.2.6]
+    services:
+      postgres:
+        image: postgres:18
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+        with: { crystal: 1.22.1 }
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install virtme-ng
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq qemu-system-x86 busybox-static
+          pipx install virtme-ng==1.42
+      - name: Build specs
+        run: |
+          mkdir -p bin
+          crystal build spec/*_spec.cr -o bin/spec
+          crystal build spec/*_spec.cr -Dgc_none -o bin/spec-nogc
+      - name: Specs on ${{ matrix.kernel }}
+        run: |
+          # inside the guest the runner (and its Postgres) is the user-mode network gateway
+          vng --verbose --force-9p -r ${{ matrix.kernel }} --user root --cpus 2 --memory 2G --network user \
+            --exec "uname -r && env RAYO_PG_URL=postgres://postgres:postgres@10.0.2.2:5432/postgres ./bin/spec && env RAYO_PG_URL=postgres://postgres:postgres@10.0.2.2:5432/postgres ./bin/spec-nogc"
