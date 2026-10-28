@@ -14,7 +14,7 @@ on Linux, built for throughput and tail latency:
 > public benchmark challenges; this repository turns that code into a reusable framework.
 > APIs will change until 0.1 is tagged.
 
-## Planned API
+## Usage
 
 ```crystal
 require "rayo"
@@ -24,11 +24,43 @@ app = Rayo::App.new
 app.get "/" { |ctx| ctx.text "¡hola!" }
 
 app.get "/users/:id" do |ctx|
-  ctx.json { |j| j.object { j.field "id", ctx.param_i64("id") } }
+  ctx.json id: ctx.param_i64("id"), name: "Ana"
 end
 
-app.run port: 3000
+app.get "/items" do |ctx|
+  ctx.json_array(1..3) { |id| {id: id} }
+end
+
+USER = Rayo::PG::Statement.new("SELECT id, name FROM users WHERE id = $1")
+app.get "/db/users/:id" do |ctx|
+  ctx.db.query(USER, ctx.param_i64("id")) do |res, ctx|
+    unless res.error?
+      if row = res.first?
+        ctx.json id: row.i64(0), name: row.str(1)
+      else
+        ctx.status 404
+      end
+    end
+  end
+end
+
+app.run port: 3000, database: ENV["DATABASE_URL"]?, pool: 4
 ```
+
+JSON fields are stack NamedTuples. Strings and byte slices are escaped; nested
+NamedTuples become objects, tuples and numeric slices/static arrays become arrays.
+`ctx.json { |j| ... }` keeps the streaming writer API, including
+`j.array(rows) { |row| {id: row.i64(0)} }`. `ctx.json_body` borrows the request body.
+
+Database sockets open in each worker after fork. Queries defer the response;
+callbacks receive the still-live context, and requests retain their wire order.
+Use constants for statements and the callback's `ctx` argument for request state.
+Capturing callbacks raise before queuing. An unhandled PG error returns 500 JSON;
+a callback can handle it with `res.error?`, a status or a response body.
+Calling `ctx.db` without a configured database raises a clear error.
+
+Runnable examples: [JSON](examples/json.cr) and [Postgres](examples/pg.cr).
+The Postgres example creates its users table and seed row during startup.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how the parts fit together.
 

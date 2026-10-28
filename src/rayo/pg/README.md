@@ -86,6 +86,11 @@ not free Conn while a send still references its output memory.
 
 `BlockingTransport` implements this using raw sockets, nonblocking sends, and
 poll for send backpressure. It handles DNS at startup and enables TCP_NODELAY.
+`detach` transfers its authenticated `{fd, conn}` to an external driver and
+releases the transport's receive scratch. The transport becomes unusable; the
+caller now owns both socket and Conn lifetimes. App uses this only after fork,
+then drives queries through the worker ring. Requiring `rayo/pg` itself does not
+load that worker integration or the HTTP server.
 
 ## Pools and batching
 

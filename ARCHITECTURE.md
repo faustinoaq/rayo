@@ -40,7 +40,7 @@ its parts. Everything lives under `module Rayo`; each part can be required on it
 | `src/rayo/json.cr` | `Rayo::JSON` | streaming writer into a `Buf`; zero-copy reader for request bodies |
 | `src/rayo/jwt.cr` | `Rayo::JWT` | HS256 sign/verify without allocation (libcrypto) |
 
-## User API (target for 0.1)
+## User API
 
 ```crystal
 require "rayo"
@@ -50,32 +50,40 @@ app = Rayo::App.new
 app.get "/" { |ctx| ctx.text "¡hola!" }
 
 app.get "/users/:id" do |ctx|
-  ctx.json do |j|
-    j.object do
-      j.field "id", ctx.param_i64("id")
-      j.field "name", "Ana"
-    end
-  end
+  ctx.json id: ctx.param_i64("id"), name: "Ana"
+end
+
+app.get "/items" do |ctx|
+  ctx.json_array(1..3) { |id| {id: id} }
 end
 
 USER = Rayo::PG::Statement.new("SELECT id, name FROM users WHERE id = $1")
 
 app.get "/db/users/:id" do |ctx|
   ctx.db.query(USER, ctx.param_i64("id")) do |res, ctx|
-    if row = res.first?
-      ctx.json { |j| j.object { j.field "id", row.i64(0); j.field "name", row.str(1) } }
-    else
-      ctx.status 404
+    unless res.error?
+      if row = res.first?
+        ctx.json id: row.i64(0), name: row.str(1)
+      else
+        ctx.status 404
+      end
     end
   end
 end
 
-app.run port: 3000 # workers: Rayo::Sys.ncpu, database: ENV["DATABASE_URL"]
+app.run port: 3000, database: ENV["DATABASE_URL"]?, pool: 4
 ```
 
 - `ctx.param(name) : Bytes` (a slice into the receive buffer), `ctx.param_i64`, `ctx.query(name)`,
   `ctx.header(name)`, `ctx.body : Bytes`, `ctx.json_body` (zero-copy reader).
-- `ctx.text`, `ctx.json { }`, `ctx.status`, `ctx.header(name, value)`, `ctx.write(bytes)`.
+- `ctx.text`, `ctx.json(**fields)`, `ctx.json { |j| ... }`,
+  `ctx.json_array(enumerable) { |item| named_tuple }`, `ctx.status`,
+  `ctx.header(name, value)`, `ctx.write(bytes)`.
+- JSON constant keys and separators are escaped at compile time into one literal per
+  field. Values dispatch through writer overloads: all integer widths, floats, booleans,
+  nil, strings/bytes, NamedTuples, tuples, numeric static arrays/slices, and custom
+  `to_json(Rayo::JSON::Writer)`. Unsupported values fail compilation.
+- `j.array(enumerable) { |item| named_tuple }` also works in streaming writer blocks.
 - Strings returned by `row.str` are slices (`Bytes`) unless the user calls `String.new`.
 - `ctx.db` is the worker's Postgres pool; queries started by requests handled in the same
   loop turn are pipelined together and flushed once.
@@ -85,10 +93,28 @@ app.run port: 3000 # workers: Rayo::Sys.ncpu, database: ENV["DATABASE_URL"]
 ### Loop and Postgres transport
 
 `Rayo::Uring` owns every socket. Postgres connections are plain fds registered with
-`Uring.watch(fd, owner_tag)`; data arrives as `PG::Conn#on_data(ptr, len)`; sends go through
+`Uring.watch(fd, owner)`; data arrives as `PG::Conn#on_data(ptr, len)`; sends go through
 `Uring.send_plain(fd, ptr, len, tag)` and complete with `PG::Conn#on_sent(res)`.
-`Rayo::PG` must also work without the loop: `PG::BlockingTransport` (plain blocking socket)
-is used by its specs and by tools/scripts.
+`Rayo::PG` also works without the loop: `PG::BlockingTransport` is used by
+its specs and tools/scripts. The worker authenticates blocking connections after
+fork, then transfers their sockets into `PG::RingTransport`. No blocking IO runs
+on requests. `Uring.add_flusher` registers a worker driver; the loop flushes drivers
+once per turn before submitting SQEs, batching all queries queued during completion
+dispatch. Only one send per PG socket can be in flight.
+
+`Context#db` is a stack view over the worker pool. Pending query records are allocated
+at startup and reused through a free list. Each record stores a deferred handle with
+HTTP connection generation and request serial; stale callbacks cannot finish a reused
+slot. Multiple queries can share a request; the last callback completes its response.
+Capturing callbacks are rejected before queuing at runtime, matching the standalone
+PG client. Crystal's ordinary block-taking methods do not expose caller ASTs for
+compile-time capture checks. Store per-request state in Context and use the callback's
+`ctx` argument. Result/row views expire as the callback returns.
+
+An error result still reaches the callback. If it leaves the default status and an
+empty body, the response becomes `500 {"error":"database error"}`. Callback exceptions
+also become 500 JSON. No database configuration causes `ctx.db` to raise clearly.
+Automatic reconnect and query cancellation are not implemented.
 
 ### Response ordering
 

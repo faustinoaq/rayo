@@ -22,7 +22,14 @@ end
 ```
 
 Writer supports object/array blocks, field(name, value), field(name) blocks,
-value(Int32/Int64/Float64/Bool/Nil/String/Bytes), and raw(String/Bytes).
+value(all Int/UInt widths, Float32/Float64, Bool/Nil/String/Bytes), and raw(String/Bytes).
+NamedTuple values become objects with compile-time escaped constant keys; tuples and
+numeric StaticArray/Slice values become arrays (Bytes remain quoted strings).
+Custom values implement `to_json(Rayo::JSON::Writer)`; unsupported types fail compilation.
+`writer.array(enumerable) { |item| {id: item} }` emits an array of NamedTuples.
+The framework adds `ctx.json(**fields)`, `ctx.json { |j| ... }`,
+`ctx.json_array(enumerable) { |item| named_tuple }`, and `ctx.json_body` through
+`rayo/context/json`; `rayo/json` itself stays independent of the server.
 Raw fragments are validated. There is one root value and at most 64 nested
 containers. Bytes used as strings must be valid UTF-8. Floats use the stdlib's
 Dragonbox algorithm with stack digits; non-finite values raise JSON::Error.
