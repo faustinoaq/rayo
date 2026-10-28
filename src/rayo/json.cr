@@ -565,6 +565,97 @@ module Rayo::JSON
       end
     end
 
+    # Keys and separators are static data; values retain normal writer validation.
+    def value(v : T) : Nil forall T
+      {% if T.union? %}
+        case v
+        {% for type in T.union_types %}
+        when {{type}}
+          value(v)
+        {% end %}
+        end
+      {% elsif T <= NamedTuple %}
+      object do
+        {% for key, i in T.keys %}
+          {% escaped = "" %}
+          {% for char in key.stringify.chars %}
+            {% if char == '"' || char == '\\' %}
+              {% escaped = escaped + "\\" + char %}
+            {% elsif char == '\n' %}
+              {% escaped = escaped + "\\n" %}
+            {% elsif char == '\r' %}
+              {% escaped = escaped + "\\r" %}
+            {% elsif char == '\t' %}
+              {% escaped = escaped + "\\t" %}
+            {% elsif char.ord < 32 %}
+              {% escaped = escaped + "\\u00" + "0123456789abcdef".chars[char.ord // 16] + "0123456789abcdef".chars[char.ord % 16] %}
+            {% else %}
+              {% escaped = escaped + char %}
+            {% end %}
+          {% end %}
+          @buf << {{(i == 0 ? "" : ",") + "\"" + escaped + "\":"}}
+          @stack[@depth - 1] |= 1
+          @pending = true
+          value(v[{{key.symbolize}}])
+        {% end %}
+      end
+      {% elsif T.has_method?(:to_json) %}
+        v.to_json(self)
+      {% else %}
+        {% raise "Unsupported JSON value type #{T}; implement to_json(Rayo::JSON::Writer)" %}
+      {% end %}
+    end
+
+    def value(v : Tuple(*T)) : Nil forall T
+      array do
+        {% for type, i in T %}
+          value(v[{{i}}])
+        {% end %}
+      end
+    end
+
+    def value(v : StaticArray(T, N)) : Nil forall T, N
+      array { v.each { |item| value(item) } }
+    end
+
+    def value(v : Slice(T)) : Nil forall T
+      array { v.each { |item| value(item) } }
+    end
+
+    def array(enumerable, &) : Nil
+      array do
+        enumerable.each do |item|
+          fields = yield item
+          object_value(fields)
+        end
+      end
+    end
+
+    private def object_value(fields : NamedTuple) : Nil
+      value(fields)
+    end
+
+    def value(v : Int) : Nil
+      before
+      # Stack digits also cover unsigned and 128-bit values without narrowing.
+      negative = v < 0
+      magnitude = negative ? (0_u128 &- v.to_u128!) : v.to_u128!
+      @buf << 45_u8 if negative
+      digits = uninitialized UInt8[39]
+      i = 39
+      loop do
+        i &-= 1
+        digits[i] = 48_u8 &+ (magnitude % 10).to_u8
+        magnitude //= 10
+        break if magnitude == 0
+      end
+      @buf.write(digits.to_unsafe + i, 39 &- i)
+    end
+
+    def value(v : Float32) : Nil
+      value(v.to_f64)
+    end
+
     def raw(v : String | Bytes)
       b = v.is_a?(String) ? v.to_slice : v
       Reader.new(b)

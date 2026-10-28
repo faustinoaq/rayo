@@ -137,7 +137,6 @@ module Rayo
       Deferred.new(@id, Server.conn(@id).gen, @serial)
     end
 
-    # TODO: JSON and PG extend Context with json/json_body and db on their branches.
     struct Deferred
       def initialize(@id : Int32, @generation : UInt16, @serial : UInt64)
       end
