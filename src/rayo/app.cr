@@ -3,6 +3,8 @@ require "./http"
 require "./router"
 require "./context"
 require "./server"
+require "./context/json"
+require "./context/db"
 
 module Rayo
   class App
@@ -44,7 +46,7 @@ module Rayo
       LibC.pthread_sigmask(1, pointerof(mask), Pointer(LibC::SigsetT).null)
     end
 
-    private def worker(host : String, port : Int32, workers : Int32) : NoReturn
+    private def worker(host : String, port : Int32, workers : Int32, database : String?, pool : Int32) : NoReturn
       reset_signals
       fd = listen(host, port)
       unless Uring.setup(pointerof(fd), 1, Sys.raise_nofile, workers)
@@ -52,6 +54,7 @@ module Rayo
         raise "io_uring setup failed (Linux 6.1+ required)"
       end
       Server.init(self, Uring.capacity)
+      Server.database = PG::WorkerPool.new(database, pool) if database
       Uring.run
     end
 
@@ -77,10 +80,11 @@ module Rayo
       fd
     end
 
-    def run(host = "0.0.0.0", port = 3000, workers = Sys.ncpu) : NoReturn
+    def run(host = "0.0.0.0", port = 3000, workers = Sys.ncpu, database : String? = ENV["DATABASE_URL"]?, pool : Int32 = 4) : NoReturn
       raise ArgumentError.new("workers must be positive") if workers < 1
       raise ArgumentError.new("invalid port") unless 0 <= port <= 65535
-      worker(host, port, 1) if workers == 1
+      raise ArgumentError.new("pool size must be positive") if pool < 1
+      worker(host, port, 1, database, pool) if workers == 1
       reset_signals
       pids = [] of Int32
       begin
@@ -92,7 +96,7 @@ module Rayo
             LibSys.prctl(1, 15_u64)
             LibC._exit(1) if LibC.getppid != parent
             begin
-              worker(host, port, workers)
+              worker(host, port, workers, database, pool)
             rescue ex
               STDERR.puts ex.message
               LibC._exit(1)

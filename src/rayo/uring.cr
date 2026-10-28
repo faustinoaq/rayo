@@ -368,6 +368,17 @@ module Rayo
     TAG_PLAIN_RECV = 6_u64
     TAG_PLAIN_SEND = 7_u64
 
+    # Drivers flush once after the previous turn's completions have all dispatched.
+    module Flusher
+      abstract def flush : Nil
+    end
+
+    @@flushers = [] of Flusher
+
+    def self.add_flusher(owner : Flusher) : Nil
+      @@flushers << owner
+    end
+
     module Handler
       abstract def on_data(ptr : UInt8*, len : Int32) : Nil
       abstract def on_sent(result : Int32) : Nil
@@ -611,6 +622,7 @@ module Rayo
       evs = LibC.malloc(MAX_RINGS * sizeof(Sys::EpollEvent)).as(Sys::EpollEvent*)
       @@nrings.times { |i| @@rings[i].watch(@@ep) }
       loop do
+        @@flushers.each &.flush
         wait = timers
         ready = false
         @@nrings.times do |i|

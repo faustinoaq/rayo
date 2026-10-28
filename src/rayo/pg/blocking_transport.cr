@@ -66,6 +66,16 @@ module Rayo::PG
       @conn.query(stmt, *args, state: state, &callback)
     end
 
+    # Startup may block; the worker then transfers this authenticated socket to its ring.
+    def detach : {Int32, Conn}
+      raise Error.new("transport closed") if @closed
+      @closed = true
+      fd = @fd
+      @fd = -1
+      LibC.free(@buffer.ptr)
+      {fd, @conn}
+    end
+
     def pending : Int32
       @conn.pending
     end
