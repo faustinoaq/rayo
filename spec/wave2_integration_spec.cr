@@ -7,6 +7,7 @@ module WorkerFeatures
   class_property index = -1
   class_property database : Rayo::SQLite::Database? = nil
   class_property group : Rayo::SQLite::GroupCommit? = nil
+  class_property count : Rayo::SQLite::Statement? = nil
   class_property passwords : Rayo::Bcrypt::Pool? = nil
 
   def self.app
@@ -17,10 +18,12 @@ module WorkerFeatures
       db = Rayo::SQLite::Database.new(":memory:")
       db.exec("CREATE TABLE items(id INTEGER PRIMARY KEY)")
       WorkerFeatures.database = db
+      WorkerFeatures.count = db.prepare("SELECT count(*) FROM items")
       group = Rayo::SQLite::GroupCommit.new(db)
       group.attach
       WorkerFeatures.group = group
       pool = Rayo::Bcrypt::Pool.new(cost: 4)
+      GC.collect
       pool.attach
       WorkerFeatures.passwords = pool
     end
@@ -46,14 +49,15 @@ module WorkerFeatures
       end
     end
     app.get("/count") do |ctx|
-      query = WorkerFeatures.database.not_nil!.prepare("SELECT count(*) FROM items")
+      query = WorkerFeatures.count.not_nil!
       begin
         query.step
         ctx.output << query.i64(0)
       ensure
-        query.close
+        query.reset
       end
     end
+    app.get("/collect") { |ctx| GC.collect; ctx.text("collected") }
     app.get("/gzip") { |ctx| 1024.times { ctx.text("compress me ") } }
     app.get("/plain") { |ctx| ctx.compress = false; 1024.times { ctx.text("compress me ") } }
     app
@@ -101,6 +105,8 @@ describe "worker features" do
         peer.read_timeout = 5.seconds
         peer << "GET / HTTP/1.1\r\n\r\n"
         feature_response(peer)[2].should eq("0")
+        peer << "GET /collect HTTP/1.1\r\n\r\n"
+        feature_response(peer)[2].should eq("collected")
         peer << "GET /hash HTTP/1.1\r\n\r\n"
         feature_response(peer)[2].should eq(%q({"ok":true}))
         peer.close

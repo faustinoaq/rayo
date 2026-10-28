@@ -461,7 +461,8 @@ module Rayo
         cq >>= 1
       end
       want = (budget // ring_cost(sq, cq)).clamp(1_u64, want.to_u64).to_i32
-      @@rings = LibC.malloc(want * sizeof(Ring)).as(Ring*)
+      # Ring is a managed class: native malloc would hide its only roots from GC.
+      @@rings = Pointer(Ring).malloc(want)
       @@slots = slots
       @@sq = sq
       @@cq = cq

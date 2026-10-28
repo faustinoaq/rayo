@@ -170,5 +170,7 @@ per connection (see `Server.add_pending` in the original code).
 ### Memory rules for contributors
 
 - No `String` building, interpolation, `to_s`, `Array`, `Hash` or closures on the request path.
-- One-time allocation at start-up is fine.
+- One-time allocation at start-up is fine. Tables that retain managed objects must
+  use GC-scanned storage (`Pointer(Ring).malloc` for the ring table); native malloc
+  memory does not keep managed references alive.
 - Every hot-path change is checked with `-Dgc_none` under load: resident memory must stay flat.

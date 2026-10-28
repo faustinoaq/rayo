@@ -217,10 +217,12 @@ SQLite bindings and commit/rollback during pipelined requests. CI runs both GC
 modes with the default runtime and `-Dwithout_mt` on every kernel in the matrix.
 
 All 68 examples pass in each of the four build combinations (default runtime or
-`-Dwithout_mt`, with or without `-Dgc_none`), about 8–9 seconds per suite on the
+`-Dwithout_mt`, with or without `-Dgc_none`), about 8–11 seconds per suite on the
 shared host. Server fixtures exec the current spec executable to start a fresh
 runtime. A raw-fork version of the default-runtime core fixture intermittently
-crashed while dispatching accepts; it bypassed App's fork guard and continued
+crashed while dispatching accepts. Fresh-exec kernel runs later exposed the
+independent ring rooting bug described below; the accept crash alone does not
+establish a fork/GC failure. Raw fork still bypasses App's guard and continues
 with inherited runtime threads. The exec fixtures preserve singleworker default
 runtime coverage and retain actual multiworker coverage in the `-Dwithout_mt`
 builds. The small raw-fork socket helpers perform only native syscalls in children.
@@ -228,3 +230,15 @@ builds. The small raw-fork socket helpers perform only native syscalls in childr
 Local native development symlinks under ignored `lib/` supplied the linker names
 for the host's installed libdeflate/SQLite runtime libraries; CI installs the
 corresponding development packages. No benchmarks or machine settings changed.
+
+
+Kernel testing with fresh runtimes exposed a concrete GC lifetime bug: the ring
+table held managed `Ring` references in `LibC.malloc` storage, which the collector
+does not scan. Bcrypt startup allocations could trigger collection and reclaim a
+live ring before attaching its completion socket. The table now uses GC-scanned
+`Pointer(Ring).malloc` storage. Forced collections during startup and between
+requests cover ring lifetime in GC builds; no request-path allocation was added.
+This is independent of the unsupported runtime fork configuration. Default-runtime
+database allocation samples allow monitor noise; `-Dwithout_mt` samples still
+require exactly zero. SQLite row iteration and bcrypt submissions also have warmed
+managed-allocation checks.

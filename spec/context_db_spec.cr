@@ -178,7 +178,8 @@ describe "Context database integration" do
       db_response(socket)[1].should eq(%q({"id":2}))
       16.times do
         socket << "GET /allocation HTTP/1.1\r\n\r\n"
-        db_response(socket)[1].should eq(%q({"allocated":0}))
+        body = db_response(socket)[1]
+        assert_no_request_allocations(Rayo::JSON::Reader.new(body.to_slice)["allocated"].i64.to_u64)
       end
       socket << "GET /capture HTTP/1.1\r\n\r\nGET /one/7 HTTP/1.1\r\n\r\n"
       db_response(socket)[0].should contain("500")
