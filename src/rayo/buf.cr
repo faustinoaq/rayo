@@ -23,9 +23,17 @@ module Rayo
       @ptr + @len
     end
 
+    # Returns memory kept from one large message to the allocator. Only an empty buffer
+    # shrinks, so no pointer into it can be live.
+    def shrink(above : Int32, to : Int32) : Nil
+      return if @cap <= above || @len > 0
+      @ptr = LibC.realloc(@ptr, to).as(UInt8*)
+      @cap = to
+    end
+
     @[NoInline]
     private def grow(need : Int32) : Nil
-      c = @cap
+      c = Math.max(@cap, 64)
       while c < need
         c = c &* 2
       end

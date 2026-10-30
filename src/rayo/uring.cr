@@ -126,6 +126,7 @@ module Rayo
     @bring : UInt8*
     @bufs : UInt8*
     @btail : UInt16 = 0
+    @legacy = false                         # buffers given back with PROVIDE_BUFFERS: the kernel refused a buffer ring
     @retry : UInt64* = Pointer(UInt64).null # receives that ran out of buffers: (gen << 32) | id
     @nretry = 0
     @retry_cap = 0
@@ -198,9 +199,18 @@ module Rayo
       reg = LibUring::BufReg.new
       reg.ring_addr = @bring.address
       reg.ring_entries = Uring::NBUF.to_u32
-      return false if LibC.syscall(Uring::SYS_REGISTER, @fd, Uring::REGISTER_PBUF_RING, pointerof(reg), 1) < 0
-      Uring::NBUF.times { |i| give_buf(i.to_u16) }
-      publish_bufs
+      if Uring.classic_buffers? || LibC.syscall(Uring::SYS_REGISTER, @fd, Uring::REGISTER_PBUF_RING, pointerof(reg), 1) < 0
+        # Some distribution kernels reject every buffer ring registration (Ubuntu 24.04's
+        # 6.8.0-136 and later return EINVAL). Classic provided buffers feed the same
+        # multishot receives through the same buffer group.
+        LibC.munmap(@bring, (Uring::NBUF * 16).to_u64)
+        @bring = Pointer(UInt8).null
+        @legacy = true
+        provide(0_u16, Uring::NBUF)
+      else
+        Uring::NBUF.times { |i| give_buf(i.to_u16) }
+        publish_bufs
+      end
       true
     end
 
@@ -286,6 +296,7 @@ module Rayo
 
     @[AlwaysInline]
     def give_buf(bid : UInt16) : Nil
+      return provide(bid, 1) if @legacy
       e = @bring + ((@btail & (Uring::NBUF &- 1)).to_i32 &* 16)
       e.as(UInt64*).value = buf(bid).address
       (e + 8).as(UInt32*).value = Uring::BUF_SIZE.to_u32
@@ -302,7 +313,21 @@ module Rayo
       raise "epoll registration failed" if Sys.epoll(ep, Sys::EPOLL_CTL_ADD, @efd, Sys::EPOLLIN | Sys::EPOLLET) < 0
     end
 
+    # One PROVIDE_BUFFERS request for `count` consecutive buffers from `bid`. It completes
+    # inline at submit, before any receive queued after it, and posts no completion.
+    @[NoInline]
+    def provide(bid : UInt16, count : Int32) : Nil
+      e = sqe
+      e.value.opcode = Uring::OP_PROVIDE_BUFFERS
+      e.value.flags = Uring::SQE_CQE_SKIP_SUCCESS
+      e.value.fd = count
+      e.value.addr = buf(bid).address
+      e.value.len = Uring::BUF_SIZE.to_u32
+      e.value.off = bid.to_u64
+    end
+
     def publish_bufs : Nil
+      return if @legacy
       store_rel((@bring + 14).as(UInt16*), @btail)
     end
 
@@ -356,30 +381,32 @@ module Rayo
     SYS_ENTER    = 426
     SYS_REGISTER = 427
 
-    SETUP_CQSIZE        = 1_u32 << 3
-    SETUP_SUBMIT_ALL    = 1_u32 << 7
-    SETUP_SINGLE_ISSUER = 1_u32 << 12
-    SETUP_DEFER_TASKRUN = 1_u32 << 13
-    FEAT_SINGLE_MMAP    = 1_u32 << 0
-    ENTER_GETEVENTS     = 1_u32
-    ENTER_EXT_ARG       = 1_u32 << 3
-    REGISTER_EVENTFD    =              4
-    REGISTER_FILES2     =             13
-    REGISTER_PBUF_RING  =             22
-    OFF_SQES            = 0x10000000_i64
-    OP_ACCEPT           =          13_u8
-    OP_CLOSE            =          19_u8
-    OP_SEND             =          26_u8
-    OP_RECV             =          27_u8
-    OP_SHUTDOWN         =          34_u8
-    SQE_FIXED_FILE      =           1_u8
-    SQE_BUFFER_SELECT   = 1_u8 << 5
-    ACCEPT_MULTISHOT    = 1_u16
-    RECV_MULTISHOT      = 2_u16
-    CQE_F_BUFFER        = 1_u32
-    CQE_F_MORE          = 2_u32
-    ENOBUFS             =   105
-    ETIME               =    62
+    SETUP_CQSIZE         = 1_u32 << 3
+    SETUP_SUBMIT_ALL     = 1_u32 << 7
+    SETUP_SINGLE_ISSUER  = 1_u32 << 12
+    SETUP_DEFER_TASKRUN  = 1_u32 << 13
+    FEAT_SINGLE_MMAP     = 1_u32 << 0
+    ENTER_GETEVENTS      = 1_u32
+    ENTER_EXT_ARG        = 1_u32 << 3
+    REGISTER_EVENTFD     =              4
+    REGISTER_FILES2      =             13
+    REGISTER_PBUF_RING   =             22
+    OFF_SQES             = 0x10000000_i64
+    OP_ACCEPT            =          13_u8
+    OP_CLOSE             =          19_u8
+    OP_SEND              =          26_u8
+    OP_RECV              =          27_u8
+    OP_SHUTDOWN          =          34_u8
+    OP_PROVIDE_BUFFERS   =          31_u8
+    SQE_FIXED_FILE       =           1_u8
+    SQE_BUFFER_SELECT    = 1_u8 << 5
+    SQE_CQE_SKIP_SUCCESS = 1_u8 << 6
+    ACCEPT_MULTISHOT     = 1_u16
+    RECV_MULTISHOT       = 2_u16
+    CQE_F_BUFFER         = 1_u32
+    CQE_F_MORE           = 2_u32
+    ENOBUFS              =   105
+    ETIME                =    62
 
     SQ_ENTRIES =  4096_u32 # largest ring; halved together while it doesn't fit the memlock budget
     CQ_ENTRIES = 32768_u32
@@ -387,6 +414,9 @@ module Rayo
     BUF_SIZE   =      2048
     MAX_RINGS  =         8
     TARGET     =    524288 # connections to make room for
+
+    # RAYO_CLASSIC_BUFFERS=1 forces the fallback, so it can be tested on any kernel.
+    class_getter? classic_buffers : Bool = ENV["RAYO_CLASSIC_BUFFERS"]? == "1"
 
     TAG_ACCEPT     = 1_u64
     TAG_RECV       = 2_u64

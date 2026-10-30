@@ -12,6 +12,20 @@ describe Rayo::Buf do
     b.cap.should be >= 12
   end
 
+  it "shrinks only when empty and above the limit, and grows again from zero" do
+    b = Rayo::Buf.new(0)
+    b << "x" * 40000
+    b.shrink(16384, 4096)
+    b.cap.should be >= 40000
+    b.clear
+    b.shrink(16384, 4096)
+    b.cap.should eq(4096)
+    b.shrink(16384, 0)
+    b.cap.should eq(4096)
+    b << "again"
+    str(b).should eq("again")
+  end
+
   it "writes integers" do
     b = Rayo::Buf.new(8)
     b << 0_i64 << ' '.ord.to_u8 << -42_i64 << ' '.ord.to_u8 << Int64::MAX

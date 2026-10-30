@@ -2,13 +2,19 @@ require "./context"
 require "./uring"
 
 module Rayo::Server
+  # Buffers above this size go back to the allocator once empty: idle keep-alive
+  # connections otherwise keep the memory of their largest request and response.
+  BUF_SIZE     = 4096
+  SHRINK_ABOVE = BUF_SIZE
+
   # Buffers and Context are retained per slot and reused even after a peer disconnects.
-  # In-flight output is immutable; new responses accumulate in next_output.
+  # In-flight output is immutable; new responses accumulate in next_output. The
+  # pipelining buffers start empty and grow only when a client pipelines.
   class Connection
-    getter input = Buf.new(4096)
-    getter backlog = Buf.new(4096)
-    property output = Buf.new(4096)
-    property next_output = Buf.new(4096)
+    getter input = Buf.new(BUF_SIZE)
+    getter backlog = Buf.new(0)
+    property output = Buf.new(BUF_SIZE)
+    property next_output = Buf.new(0)
     getter context : Context
     property gen = 0_u16
     property open = false
@@ -39,6 +45,15 @@ module Rayo::Server
       @backlog.clear
       @output.clear
       @next_output.clear
+      shrink
+    end
+
+    def shrink : Nil
+      @input.shrink(SHRINK_ABOVE, BUF_SIZE)
+      @backlog.shrink(SHRINK_ABOVE, 0)
+      @output.shrink(SHRINK_ABOVE, BUF_SIZE)
+      @next_output.shrink(SHRINK_ABOVE, 0)
+      @context.output.shrink(SHRINK_ABOVE, BUF_SIZE)
     end
   end
 
@@ -112,6 +127,7 @@ module Rayo::Server
     unless c.busy
       c.input.ptr.move_from(c.input.ptr + off, c.input.len - off) if off > 0
       c.input.len -= off
+      c.input.shrink(SHRINK_ABOVE, BUF_SIZE)
       c.closing = true if c.eof
     end
     flush(id)
@@ -129,6 +145,10 @@ module Rayo::Server
     end
     target = c.sending ? c.next_output : c.output
     HTTP.response(target, ctx.code, ctx.output, ctx.headers, ctx.content_type, ctx.request.close, ctx.method == HTTP::Method::HEAD)
+    if ctx.output.cap > SHRINK_ABOVE
+      ctx.output.clear
+      ctx.output.shrink(SHRINK_ABOVE, BUF_SIZE)
+    end
     Uring.close(id) if target.len > 4 * HTTP::MAX_BODY
   end
 
@@ -142,6 +162,7 @@ module Rayo::Server
     c.input.len -= c.consumed
     c.input.write(c.backlog.ptr, c.backlog.len)
     c.backlog.clear
+    c.backlog.shrink(SHRINK_ABOVE, 0)
     c.closing ? flush(id) : process(id)
   end
 
@@ -175,6 +196,7 @@ module Rayo::Server
       return
     end
     c.output.clear
+    c.output.shrink(SHRINK_ABOVE, BUF_SIZE)
     c.output, c.next_output = c.next_output, c.output
     flush(id)
   end

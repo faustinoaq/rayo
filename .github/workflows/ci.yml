@@ -34,3 +34,4 @@ jobs:
           crystal spec -Dgc_none
           crystal spec -Dwithout_mt
           crystal spec -Dwithout_mt -Dgc_none
+          RAYO_CLASSIC_BUFFERS=1 crystal spec spec/core_integration_spec.cr spec/wave2_integration_spec.cr
