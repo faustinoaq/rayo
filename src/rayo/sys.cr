@@ -51,6 +51,19 @@ module Rayo
       max : UInt64
     end
 
+    struct CapHeader
+      version : UInt32
+      pid : Int32
+    end
+
+    struct CapData
+      effective : UInt32
+      permitted : UInt32
+      inheritable : UInt32
+    end
+
+    fun capget(header : CapHeader*, data : CapData*) : Int
+
     struct Iovec
       base : Void*
       len : SizeT
@@ -129,9 +142,14 @@ module Rayo
     end
 
     # RLIMIT_MEMLOCK raised to its hard limit, three quarters of it as io_uring's budget.
-    # Unlimited for root (CAP_IPC_LOCK: nothing is counted) or an unlimited limit.
+    # UID zero alone does not imply CAP_IPC_LOCK (notably in containers).
     def self.memlock_budget : UInt64
-      return UInt64::MAX if LibSys.geteuid == 0
+      header = LibSys::CapHeader.new
+      header.version = 0x20080522_u32 # _LINUX_CAPABILITY_VERSION_3
+      caps = uninitialized LibSys::CapData[2]
+      if LibSys.capget(pointerof(header), caps.to_unsafe) == 0 && caps[0].effective & (1_u32 << 14) != 0
+        return UInt64::MAX # CAP_IPC_LOCK bypasses memlock accounting
+      end
       rl = uninitialized Rlimit
       LibC.getrlimit(RLIMIT_MEMLOCK, pointerof(rl).as(LibC::Rlimit*))
       rl.cur = rl.max

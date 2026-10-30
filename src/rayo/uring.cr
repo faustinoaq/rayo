@@ -108,6 +108,8 @@ module Rayo
     property accepting = 0 # multishot accepts armed here (one per listener)
     property used = 0      # slots taken: accepted and not yet closed by the kernel
 
+    class_getter error = ""
+
     @efd = -1
     @ring_mem : UInt8*
     @ring_size : UInt64
@@ -137,9 +139,13 @@ module Rayo
       pa.cq_entries = cq
       pa.flags = Uring::SETUP_CQSIZE | Uring::SETUP_SUBMIT_ALL | Uring::SETUP_SINGLE_ISSUER | Uring::SETUP_DEFER_TASKRUN
       fd = LibC.syscall(Uring::SYS_SETUP, sq, pointerof(pa)).to_i32
-      return nil if fd < 0
+      if fd < 0
+        @@error = "setup errno #{Sys.errno}"
+        return nil
+      end
       r = new(fd, base, slots, pointerof(pa))
       return r if r.init
+      @@error = "registration/mmap errno #{Sys.errno}"
       r.dispose
       nil
     end
@@ -486,7 +492,7 @@ module Rayo
       budget = Sys.memlock_budget // share
       sq = SQ_ENTRIES
       cq = CQ_ENTRIES
-      while sq > 256 && ring_cost(sq, cq) > budget
+      while sq > 256 && ring_cost(sq, cq) * want > budget
         sq >>= 1
         cq >>= 1
       end
@@ -496,13 +502,27 @@ module Rayo
       @@slots = slots
       @@sq = sq
       @@cq = cq
-      want.times do |i|
-        r = Ring.create(i &* slots, slots, sq, cq)
-        break unless r
-        @@rings[i] = r
-        @@nrings &+= 1
+      loop do
+        want.times do |i|
+          r = Ring.create(i &* slots, slots, sq, cq)
+          break unless r
+          @@rings[i] = r
+          @@nrings &+= 1
+        end
+        break if @@nrings == want || sq == 256
+        # The budget is only an estimate; retry smaller queues before losing capacity.
+        @@nrings.times { |i| @@rings[i].dispose }
+        @@nrings = 0
+        sq >>= 1
+        cq >>= 1
       end
+      @@sq = sq
+      @@cq = cq
       return false if @@nrings == 0
+      if @@nrings < want || capacity < {TARGET, MAX_RINGS * slots}.min
+        reason = @@nrings < want ? Ring.error : "memlock budget #{budget}"
+        STDERR.puts "Rayo: reduced io_uring capacity: #{describe} (#{reason})"
+      end
       @@ep = LibC.epoll_create1(0)
       raise "epoll_create failed" if @@ep < 0
       arm_accept(@@rings[0])
